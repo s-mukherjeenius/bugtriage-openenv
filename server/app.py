@@ -68,6 +68,12 @@ def interactive_ui():
     return FileResponse(str(_UI_FILE), media_type="text/html")
 
 
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirect root to the interactive UI."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui")
+
 @app.get("/tasks")
 def list_tasks() -> List[Dict[str, Any]]:
     """List all available tasks with metadata."""
