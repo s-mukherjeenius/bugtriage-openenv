@@ -193,19 +193,11 @@ def interactive_ui():
     return FileResponse(str(UI_FILE), media_type="text/html")
 
 
-@app.get("/", tags=["meta"])
-def root() -> Dict[str, str]:
-    return {
-        "name": "BugTriage OpenEnv",
-        "version": "1.0.0",
-        "ui": "/ui",
-        "docs": "/docs",
-        "tasks": "/tasks",
-        "reset": "POST /reset",
-        "step": "POST /step",
-        "state": "GET /state",
-        "grade": "POST /grade",
-    }
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirect root to interactive UI."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui")
 
 
 # ---------------------------------------------------------------------------
