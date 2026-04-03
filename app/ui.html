@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>🐛 BugTriage OpenEnv — Interactive Tester</title>
+<style>
+  :root {
+    --bg:       #0f1117;
+    --surface:  #1a1d27;
+    --surface2: #222535;
+    --border:   #2d3048;
+    --accent:   #6c63ff;
+    --accent2:  #ff6584;
+    --green:    #22c55e;
+    --yellow:   #eab308;
+    --red:      #ef4444;
+    --orange:   #f97316;
+    --blue:     #3b82f6;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --radius:   10px;
+    --font:     'Inter', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.6; }
+
+  /* ── Layout ── */
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header .badge { background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; text-transform: uppercase; letter-spacing: .5px; }
+  .layout { display: grid; grid-template-columns: 340px 1fr 300px; gap: 0; height: calc(100vh - 57px); overflow: hidden; }
+
+  /* ── Panels ── */
+  .panel { border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+  .panel:last-child { border-right: none; }
+  .panel-header { padding: 14px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: var(--surface); z-index: 10; }
+  .panel-body { padding: 12px; flex: 1; overflow-y: auto; }
+
+  /* ── Task selector ── */
+  .task-selector { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .task-btn { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; text-align: left; transition: all .15s; color: var(--text); }
+  .task-btn:hover { border-color: var(--accent); background: #1e2035; }
+  .task-btn.active { border-color: var(--accent); background: #1a1d35; }
+  .task-btn .task-name { font-weight: 600; font-size: 13px; }
+  .task-btn .task-meta { display: flex; gap: 8px; margin-top: 4px; }
+  .pill { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 20px; text-transform: uppercase; letter-spacing: .3px; }
+  .pill-easy   { background: #14532d; color: var(--green); }
+  .pill-medium { background: #713f12; color: var(--yellow); }
+  .pill-hard   { background: #7f1d1d; color: var(--red); }
+  .pill-steps  { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+  .start-btn { width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 700; cursor: pointer; letter-spacing: .3px; transition: opacity .15s; }
+  .start-btn:hover { opacity: .85; }
+  .start-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── Score bar ── */
+  .score-card { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 16px; }
+  .score-card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+  .score-big { font-size: 32px; font-weight: 800; color: var(--green); }
+  .progress-wrap { margin-top: 10px; }
+  .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 3px; transition: width .4s; }
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .stat .s-val { font-size: 18px; font-weight: 700; }
+  .stat .s-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+
+  /* ── Bug cards ── */
+  .bug-card { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; cursor: pointer; transition: border-color .15s; position: relative; }
+  .bug-card:hover { border-color: var(--accent); }
+  .bug-card.selected { border-color: var(--accent); background: #1a1d35; }
+  .bug-card.submitted { opacity: .45; border-color: var(--green); }
+  .bug-card.duplicate { opacity: .55; border-color: var(--yellow); }
+  .bug-id { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .bug-title { font-size: 13px; font-weight: 600; margin: 3px 0 6px; }
+  .bug-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+  .bug-status { position: absolute; top: 10px; right: 10px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+
+  /* Severity pills */
+  .sev-critical { background: #7f1d1d; color: #fca5a5; }
+  .sev-high     { background: #7c2d12; color: #fdba74; }
+  .sev-medium   { background: #713f12; color: #fde68a; }
+  .sev-low      { background: #1e3a5f; color: #93c5fd; }
+  .sev-none     { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+  .team-pill    { background: #1e1b4b; color: #a5b4fc; }
+  .info-badge   { background: #1c3a5e; color: #7dd3fc; font-size: 9px; }
+  .esc-badge    { background: #4c1d95; color: #c4b5fd; font-size: 9px; }
+  .dup-badge    { background: #3f2b00; color: #fde68a; font-size: 9px; }
+  .done-badge   { background: #14532d; color: #86efac; font-size: 9px; }
+
+  /* ── Action panel ── */
+  .action-panel { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+  .action-panel h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 12px; }
+  .form-group { margin-bottom: 10px; }
+  label { font-size: 11px; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
+  select, input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 7px 10px; font-size: 13px; outline: none; transition: border-color .15s; }
+  select:focus, input:focus { border-color: var(--accent); }
+  .action-btn { width: 100%; padding: 10px; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 700; cursor: pointer; transition: all .15s; }
+  .action-btn-primary { background: var(--accent); color: #fff; }
+  .action-btn-primary:hover { opacity: .85; }
+  .action-btn-primary:disabled { opacity: .35; cursor: not-allowed; }
+
+  /* Quick action buttons */
+  .quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+  .qa-btn { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer; text-align: center; transition: all .15s; }
+  .qa-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .qa-btn.active { border-color: var(--accent); background: #1a1d35; color: var(--accent); }
+
+  /* ── History panel ── */
+  .history-list { display: flex; flex-direction: column; gap: 6px; }
+  .hist-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+  .hist-step { font-size: 10px; color: var(--muted); }
+  .hist-action { font-weight: 600; margin: 2px 0; }
+  .hist-reward { font-size: 11px; }
+  .reward-pos { color: var(--green); }
+  .reward-neg { color: var(--red); }
+  .reward-neu { color: var(--muted); }
+  .hist-msg { color: var(--muted); font-size: 11px; }
+
+  /* ── Score breakdown ── */
+  .breakdown { display: flex; flex-direction: column; gap: 8px; }
+  .comp-row { display: flex; align-items: center; gap: 8px; }
+  .comp-name { font-size: 11px; color: var(--muted); width: 110px; flex-shrink: 0; }
+  .comp-bar-wrap { flex: 1; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .comp-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s; }
+  .comp-val { font-size: 11px; font-weight: 700; width: 42px; text-align: right; flex-shrink: 0; }
+
+  /* ── Bug detail modal ── */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; display: flex; align-items: center; justify-content: center; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; width: 560px; max-height: 80vh; overflow-y: auto; padding: 24px; }
+  .modal-close { float: right; background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+  .modal h2 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .detail-item .d-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+  .detail-item .d-val { font-size: 13px; font-weight: 600; margin-top: 2px; }
+  .desc-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.7; margin-bottom: 12px; }
+  .steps-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; font-family: monospace; white-space: pre-wrap; color: var(--muted); }
+  .missing-warn { background: #3f1515; border: 1px solid #7f1d1d; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #fca5a5; margin-bottom: 10px; }
+
+  /* ── Misc ── */
+  .empty-state { text-align: center; color: var(--muted); padding: 40px 20px; }
+  .empty-state .icon { font-size: 40px; margin-bottom: 10px; }
+  .divider { height: 1px; background: var(--border); margin: 14px 0; }
+  .sla-urgent { color: var(--red); font-weight: 700; }
+  .sla-warn   { color: var(--orange); font-weight: 600; }
+  .episode-done-banner { background: linear-gradient(135deg, #14532d, #1e3a5f); border: 1px solid var(--green); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; text-align: center; }
+  .episode-done-banner h3 { color: var(--green); font-size: 15px; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span style="font-size:22px">🐛</span>
+  <h1>BugTriage OpenEnv</h1>
+  <span class="badge">Interactive Tester</span>
+  <span style="margin-left:auto;font-size:12px;color:var(--muted)" id="server-status">Connecting…</span>
+</header>
+
+<div class="layout">
+
+  <!-- LEFT: Task selector + Score -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>Episode Control</span>
+      <span id="step-counter" style="color:var(--accent);font-size:13px">—</span>
+    </div>
+    <div class="panel-body">
+
+      <div class="task-selector" id="task-selector">
+        <button class="task-btn active" data-task="single-triage" onclick="selectTask(this)">
+          <div class="task-name">Single Critical Triage</div>
+          <div class="task-meta">
+            <span class="pill pill-easy">Easy</span>
+            <span class="pill pill-steps">5 steps · 1 bug</span>
+          </div>
+        </button>
+        <button class="task-btn" data-task="batch-triage" onclick="selectTask(this)">
+          <div class="task-name">Batch Triage + Duplicate Detection</div>
+          <div class="task-meta">
+            <span class="pill pill-medium">Medium</span>
+            <span class="pill pill-steps">32 steps · 8 bugs</span>
+          </div>
+        </button>
+        <button class="task-btn" data-task="sla-crisis" onclick="selectTask(this)">
+          <div class="task-name">SLA Crisis: Mass Bug Surge</div>
+          <div class="task-meta">
+            <span class="pill pill-hard">Hard</span>
+            <span class="pill pill-steps">50 steps · 15 bugs</span>
+          </div>
+        </button>
+      </div>
+
+      <button class="start-btn" id="start-btn" onclick="startEpisode()">▶ Start Episode</button>
+
+      <div class="divider"></div>
+
+      <!-- Score card -->
+      <div class="score-card" id="score-card" style="display:none">
+        <div class="label">Episode Score</div>
+        <div class="score-big" id="score-display">0.00</div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="score-bar" style="width:0%"></div></div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="s-val" id="stat-steps">0</div>
+            <div class="s-lbl">Steps Used</div>
+          </div>
+          <div class="stat">
+            <div class="s-val" id="stat-submitted">0/0</div>
+            <div class="s-lbl">Submitted</div>
+          </div>
+          <div class="stat">
+            <div class="s-val" id="stat-classified">0</div>
+            <div class="s-lbl">Classified</div>
+          </div>
+          <div class="stat">
+            <div class="s-val" id="stat-reward">0.00</div>
+            <div class="s-lbl">Cumul. Reward</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Component breakdown -->
+      <div id="breakdown-section" style="display:none">
+        <div class="panel-header" style="padding:0;margin-bottom:8px;position:static">
+          <span>Score Breakdown</span>
+          <button onclick="refreshGrade()" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;font-weight:600">↻ Refresh</button>
+        </div>
+        <div class="breakdown" id="breakdown-list"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MIDDLE: Bug list + Action panel -->
+  <div class="panel" style="border-right:none">
+    <div class="panel-header">
+      <span id="bugs-header">Bug Reports</span>
+      <span style="font-size:11px;color:var(--accent);cursor:pointer" onclick="toggleShowAll()" id="toggle-all-label"></span>
+    </div>
+    <div class="panel-body" style="display:grid;grid-template-columns:1fr 320px;gap:12px;align-items:start">
+
+      <!-- Bug list -->
+      <div>
+        <div id="episode-done-banner" style="display:none">
+          <div class="episode-done-banner">
+            <h3>🎉 Episode Complete!</h3>
+            <div style="font-size:12px;color:#86efac;margin-top:4px">All bugs submitted. Click "Start Episode" to restart.</div>
+          </div>
+        </div>
+        <div id="bug-list">
+          <div class="empty-state"><div class="icon">🎯</div><div>Select a task and click<br><strong>Start Episode</strong> to begin</div></div>
+        </div>
+      </div>
+
+      <!-- Action panel -->
+      <div style="position:sticky;top:0">
+        <div class="action-panel" id="action-panel" style="display:none">
+          <h3>Take Action</h3>
+
+          <div class="form-group">
+            <label>Action Type</label>
+            <div class="quick-actions" id="action-type-btns">
+              <button class="qa-btn active" data-type="classify"       onclick="setActionType(this)">Classify</button>
+              <button class="qa-btn"        data-type="assign"         onclick="setActionType(this)">Assign</button>
+              <button class="qa-btn"        data-type="request_info"   onclick="setActionType(this)">Request Info</button>
+              <button class="qa-btn"        data-type="mark_duplicate" onclick="setActionType(this)">Mark Duplicate</button>
+              <button class="qa-btn"        data-type="escalate"       onclick="setActionType(this)">Escalate</button>
+              <button class="qa-btn"        data-type="submit"         onclick="setActionType(this)">Submit</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Target Bug ID</label>
+            <select id="action-bug-id" onchange="onBugIdChange()">
+              <option value="">— select —</option>
+            </select>
+          </div>
+
+          <!-- Dynamic fields -->
+          <div id="field-severity" class="form-group" style="display:none">
+            <label>Severity</label>
+            <select id="action-severity">
+              <option value="critical">🔴 Critical — Production down / security breach</option>
+              <option value="high">🟠 High — Major feature broken</option>
+              <option value="medium" selected>🟡 Medium — Notable bug with workaround</option>
+              <option value="low">🔵 Low — Cosmetic / minor</option>
+            </select>
+          </div>
+
+          <div id="field-team" class="form-group" style="display:none">
+            <label>Assigned Team</label>
+            <select id="action-team">
+              <option value="backend">Backend</option>
+              <option value="frontend">Frontend</option>
+              <option value="mobile">Mobile</option>
+              <option value="infrastructure">Infrastructure</option>
+              <option value="security">Security</option>
+              <option value="database">Database</option>
+              <option value="qa">QA</option>
+            </select>
+          </div>
+
+          <div id="field-duplicate" class="form-group" style="display:none">
+            <label>Original Bug ID (duplicate of)</label>
+            <select id="action-duplicate">
+              <option value="">— select original —</option>
+            </select>
+          </div>
+
+          <div id="field-info" class="form-group" style="display:none">
+            <label>Information to Request (comma-separated)</label>
+            <input type="text" id="action-info" placeholder="e.g. steps_to_reproduce, device_model, os_version"/>
+          </div>
+
+          <div id="field-escalation" class="form-group" style="display:none">
+            <label>Escalation Reason</label>
+            <input type="text" id="action-escalation" placeholder="e.g. SLA breach, security vulnerability"/>
+          </div>
+
+          <button class="action-btn action-btn-primary" id="submit-action-btn" onclick="submitAction()" disabled>
+            Execute Action
+          </button>
+
+          <div id="action-feedback" style="margin-top:10px;font-size:12px;display:none"></div>
+        </div>
+
+        <!-- Tips -->
+        <div id="tips-panel" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;font-size:12px;color:var(--muted);line-height:1.7">
+          <strong style="color:var(--text);display:block;margin-bottom:6px">💡 How to Play</strong>
+          1. Select a task and click <strong style="color:var(--text)">Start Episode</strong><br>
+          2. Click any bug card to select it<br>
+          3. Choose an action type and fill in the fields<br>
+          4. Click <strong style="color:var(--text)">Execute Action</strong> to step the environment<br>
+          5. Watch your score update in real-time<br><br>
+          <strong style="color:var(--text)">Winning strategy:</strong><br>
+          Classify → Assign → (optional: escalate, request_info, mark_duplicate) → Submit
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- RIGHT: Action history -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>Action History</span>
+      <span id="history-count" style="color:var(--muted);font-size:11px">0 steps</span>
+    </div>
+    <div class="panel-body">
+      <div id="history-list">
+        <div class="empty-state"><div class="icon">📋</div><div>Actions will appear here</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bug detail modal -->
+<div id="modal" class="modal-backdrop" style="display:none" onclick="closeModal(event)">
+  <div class="modal" id="modal-content">
+    <button class="modal-close" onclick="document.getElementById('modal').style.display='none'">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const API = '';   // same origin — FastAPI serves this page
+let state = {
+  task: 'single-triage',
+  obs: null,
+  history: [],
+  done: false,
+  actionType: 'classify',
+  selectedBugId: null,
+  showAll: false,
+  gradeComponents: {}
+};
+
+// ── Startup ──────────────────────────────────────────────
+window.onload = async () => {
+  try {
+    const r = await fetch(`${API}/health`);
+    const d = await r.json();
+    document.getElementById('server-status').textContent = `Server v${d.version} ✓`;
+    document.getElementById('server-status').style.color = 'var(--green)';
+  } catch {
+    document.getElementById('server-status').textContent = 'Server unreachable ✗';
+    document.getElementById('server-status').style.color = 'var(--red)';
+  }
+};
+
+// ── Task selection ────────────────────────────────────────
+function selectTask(btn) {
+  document.querySelectorAll('.task-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  state.task = btn.dataset.task;
+}
+
+// ── Episode start ─────────────────────────────────────────
+async function startEpisode() {
+  const btn = document.getElementById('start-btn');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    const r = await fetch(`${API}/reset`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task: state.task})
+    });
+    const data = await r.json();
+    state.obs = data.observation;
+    state.done = data.done;
+    state.history = [];
+    state.selectedBugId = null;
+    state.showAll = false;
+    document.getElementById('toggle-all-label').textContent = 'Show All';
+    renderAll();
+    document.getElementById('action-panel').style.display = 'block';
+    document.getElementById('score-card').style.display = 'block';
+    document.getElementById('breakdown-section').style.display = 'block';
+    document.getElementById('episode-done-banner').style.display = 'none';
+    document.getElementById('tips-panel').style.display = 'none';
+    await refreshGrade();
+  } catch(e) {
+    alert('Failed to connect to BugTriage server. Is it running on port 7860?\n\n' + e);
+  }
+  btn.disabled = false;
+  btn.textContent = '↺ Restart Episode';
+}
+
+// ── Action type ───────────────────────────────────────────
+function setActionType(btn) {
+  document.querySelectorAll('.qa-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  state.actionType = btn.dataset.type;
+  updateDynamicFields();
+}
+
+function updateDynamicFields() {
+  const t = state.actionType;
+  document.getElementById('field-severity').style.display  = t === 'classify'       ? 'block' : 'none';
+  document.getElementById('field-team').style.display      = t === 'assign'          ? 'block' : 'none';
+  document.getElementById('field-duplicate').style.display = t === 'mark_duplicate' ? 'block' : 'none';
+  document.getElementById('field-info').style.display      = t === 'request_info'   ? 'block' : 'none';
+  document.getElementById('field-escalation').style.display= t === 'escalate'       ? 'block' : 'none';
+  checkSubmitEnabled();
+}
+
+function onBugIdChange() {
+  state.selectedBugId = document.getElementById('action-bug-id').value || null;
+  // auto-select bug card
+  if (state.selectedBugId) {
+    document.querySelectorAll('.bug-card').forEach(c => {
+      c.classList.toggle('selected', c.dataset.bid === state.selectedBugId);
+    });
+    // prefill duplicate selector with other bug ids
+    const dup = document.getElementById('action-duplicate');
+    const cur = state.selectedBugId;
+    dup.innerHTML = '<option value="">— select original —</option>';
+    (state.obs?.bug_reports || []).forEach(b => {
+      if (b.id !== cur) {
+        const o = document.createElement('option');
+        o.value = b.id; o.textContent = b.id + ' — ' + b.title.slice(0,40);
+        dup.appendChild(o);
+      }
+    });
+  }
+  checkSubmitEnabled();
+}
+
+function checkSubmitEnabled() {
+  const hasTask = !!state.obs;
+  const hasBug  = !!document.getElementById('action-bug-id').value;
+  document.getElementById('submit-action-btn').disabled = !(hasTask && hasBug && !state.done);
+}
+
+// ── Submit action ─────────────────────────────────────────
+async function submitAction() {
+  const bugId = document.getElementById('action-bug-id').value;
+  if (!bugId) return;
+
+  const action = { action_type: state.actionType, bug_id: bugId };
+  if (state.actionType === 'classify')       action.severity       = document.getElementById('action-severity').value;
+  if (state.actionType === 'assign')         action.assigned_team  = document.getElementById('action-team').value;
+  if (state.actionType === 'mark_duplicate') action.duplicate_of   = document.getElementById('action-duplicate').value;
+  if (state.actionType === 'request_info')   action.info_requested = document.getElementById('action-info').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if (state.actionType === 'escalate')       action.escalation_reason = document.getElementById('action-escalation').value || 'Escalation required';
+
+  const btn = document.getElementById('submit-action-btn');
+  btn.disabled = true; btn.textContent = 'Executing…';
+
+  try {
+    const r = await fetch(`${API}/step`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(action)
+    });
+
+    if (!r.ok) {
+      const err = await r.json();
+      showFeedback('❌ ' + (err.detail || 'Error'), 'error');
+      return;
+    }
+
+    const data = await r.json();
+    state.obs  = data.observation;
+    state.done = data.done;
+
+    // Add to local history
+    state.history.unshift({
+      step:   state.obs.step_number,
+      action: action,
+      reward: data.reward,
+      done:   data.done,
+      msg:    data.info?.reward_message || ''
+    });
+
+    // Feedback
+    const rew = data.reward;
+    const col = rew > 0 ? 'var(--green)' : rew < 0 ? 'var(--red)' : 'var(--muted)';
+    const sign = rew > 0 ? '+' : '';
+    showFeedback(`${data.info?.reward_message || 'Action executed'} <span style="color:${col};font-weight:700"> ${sign}${rew.toFixed(2)}</span>`, rew >= 0 ? 'ok' : 'error');
+
+    renderAll();
+    await refreshGrade();
+
+    if (data.done) {
+      state.done = true;
+      document.getElementById('episode-done-banner').style.display = 'block';
+      document.getElementById('submit-action-btn').disabled = true;
+    }
+
+  } catch(e) {
+    showFeedback('❌ Network error: ' + e.message, 'error');
+  } finally {
+    btn.textContent = 'Execute Action';
+    if (!state.done) checkSubmitEnabled();
+  }
+}
+
+function showFeedback(msg, type) {
+  const el = document.getElementById('action-feedback');
+  el.style.display = 'block';
+  el.style.color = type === 'error' ? 'var(--red)' : 'var(--green)';
+  el.innerHTML = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.display = 'none'; }, 4000);
+}
+
+// ── Grade refresh ─────────────────────────────────────────
+async function refreshGrade() {
+  if (!state.obs) return;
+  try {
+    const r = await fetch(`${API}/grade`, {method:'POST'});
+    const g = await r.json();
+    const score = g.score || 0;
+    document.getElementById('score-display').textContent = score.toFixed(3);
+    document.getElementById('score-bar').style.width = (score * 100) + '%';
+    state.gradeComponents = g.components || {};
+    renderBreakdown();
+  } catch {}
+}
+
+function renderBreakdown() {
+  const el = document.getElementById('breakdown-list');
+  el.innerHTML = '';
+  const comp = state.gradeComponents;
+  const maxW = { severity:0.40, team:0.30, no_wasted_info:0.15, escalation:0.10,
+                 duplicate_detection:0.20, info_request:0.10, security_escalation:0.10,
+                 sla_escalations:0.20, info_requests:0.10, efficiency:0.05 };
+  Object.entries(comp).forEach(([k, v]) => {
+    const max = maxW[k] || 0.40;
+    const pct = max > 0 ? Math.min(100, (v / max) * 100) : 0;
+    const label = k.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
+    el.innerHTML += `
+      <div class="comp-row">
+        <div class="comp-name">${label}</div>
+        <div class="comp-bar-wrap"><div class="comp-bar-fill" style="width:${Math.max(0,pct)}%"></div></div>
+        <div class="comp-val" style="color:${v>0?'var(--green)':v<0?'var(--red)':'var(--muted)'}">${v.toFixed(3)}</div>
+      </div>`;
+  });
+}
+
+// ── Render everything ─────────────────────────────────────
+function renderAll() {
+  if (!state.obs) return;
+  const obs = state.obs;
+
+  // Step counter
+  document.getElementById('step-counter').textContent =
+    `Step ${obs.step_number} / ${obs.step_number + obs.steps_remaining}`;
+
+  // Stats
+  document.getElementById('stat-steps').textContent     = obs.step_number;
+  document.getElementById('stat-submitted').textContent = `${obs.submitted_bug_ids.length}/${obs.bug_reports.length}`;
+  document.getElementById('stat-classified').textContent= Object.keys(obs.current_classifications).length;
+  document.getElementById('stat-reward').textContent    = obs.cumulative_reward.toFixed(2);
+
+  // Bugs header
+  const unp = obs.unprocessed_bug_ids.length;
+  document.getElementById('bugs-header').textContent = `Bug Reports (${unp} remaining)`;
+  document.getElementById('toggle-all-label').textContent = state.showAll ? 'Hide Submitted' : 'Show All';
+
+  // Bug cards
+  renderBugCards(obs);
+
+  // Action bug-id selector (only unprocessed)
+  const sel = document.getElementById('action-bug-id');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select bug —</option>';
+  obs.bug_reports.forEach(b => {
+    if (!state.showAll && obs.submitted_bug_ids.includes(b.id)) return;
+    const o = document.createElement('option');
+    o.value = b.id;
+    const sev = obs.current_classifications[b.id] || '?';
+    const team = obs.current_assignments[b.id] || '?';
+    o.textContent = `${b.id} [${sev}|${team}]`;
+    if (obs.submitted_bug_ids.includes(b.id)) o.textContent += ' ✓';
+    sel.appendChild(o);
+  });
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  checkSubmitEnabled();
+
+  // History
+  renderHistory();
+}
+
+function renderBugCards(obs) {
+  const el = document.getElementById('bug-list');
+  el.innerHTML = '';
+
+  // Sort: unprocessed first, SLA critical at top
+  const bugs = [...obs.bug_reports].sort((a, b) => {
+    const aSubmit = obs.submitted_bug_ids.includes(a.id);
+    const bSubmit = obs.submitted_bug_ids.includes(b.id);
+    if (aSubmit !== bSubmit) return aSubmit ? 1 : -1;
+    const aSLA = a.sla_hours_remaining ?? 999;
+    const bSLA = b.sla_hours_remaining ?? 999;
+    return aSLA - bSLA;
+  });
+
+  bugs.forEach(bug => {
+    const submitted  = obs.submitted_bug_ids.includes(bug.id);
+    const isDuplicate= !!obs.duplicate_map[bug.id];
+    if (!state.showAll && submitted) return;
+
+    const sev   = obs.current_classifications[bug.id];
+    const team  = obs.current_assignments[bug.id];
+    const esc   = obs.escalated_bug_ids.includes(bug.id);
+    const info  = obs.action_history?.some(a => a.action_type === 'request_info' && a.bug_id === bug.id);
+    const dup   = obs.duplicate_map[bug.id];
+    const sla   = bug.sla_hours_remaining;
+    const slaClass = sla != null ? (sla < 2 ? 'sla-urgent' : sla < 6 ? 'sla-warn' : '') : '';
+
+    const selected = state.selectedBugId === bug.id;
+    const cls = ['bug-card', selected?'selected':'', submitted?'submitted':'', isDuplicate?'duplicate':''].join(' ');
+
+    const div = document.createElement('div');
+    div.className = cls;
+    div.dataset.bid = bug.id;
+    div.onclick = () => selectBug(bug.id);
+    div.ondblclick = () => showBugDetail(bug, obs);
+
+    div.innerHTML = `
+      <div class="bug-status">
+        ${submitted  ? '<span class="pill done-badge">✓ Submitted</span>' : ''}
+        ${esc        ? '<span class="pill esc-badge">↑ Escalated</span>' : ''}
+        ${info       ? '<span class="pill info-badge">? Info Req</span>' : ''}
+        ${dup        ? `<span class="pill dup-badge">≡ Dup of ${dup}</span>` : ''}
+      </div>
+      <div class="bug-id">${bug.id}</div>
+      <div class="bug-title">${bug.title}</div>
+      <div class="bug-meta">
+        ${sev  ? `<span class="pill sev-${sev}">${sev}</span>` : '<span class="pill sev-none">unclassified</span>'}
+        ${team ? `<span class="pill team-pill">${team}</span>` : ''}
+        ${sla != null ? `<span class="pill pill-steps ${slaClass}">SLA ${sla.toFixed(1)}h</span>` : ''}
+        ${bug.customer_tier ? `<span class="pill pill-steps">${bug.customer_tier}</span>` : ''}
+        ${!bug.steps_to_reproduce ? '<span class="pill info-badge">Missing steps</span>' : ''}
+        ${!bug.environment_info   ? '<span class="pill info-badge">Missing env</span>' : ''}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">${bug.description.slice(0,100)}…</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">Double-click to view full details</div>
+    `;
+    el.appendChild(div);
+  });
+
+  if (el.children.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">✅</div><div>All bugs submitted!</div></div>';
+  }
+}
+
+function renderHistory() {
+  const el = document.getElementById('history-list');
+  document.getElementById('history-count').textContent = state.history.length + ' steps';
+  if (state.history.length === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">📋</div><div>No actions yet</div></div>';
+    return;
+  }
+  el.innerHTML = state.history.map(h => {
+    const rew = h.reward;
+    const rewClass = rew > 0 ? 'reward-pos' : rew < 0 ? 'reward-neg' : 'reward-neu';
+    const rewSign  = rew > 0 ? '+' : '';
+    const actionLabel = formatActionLabel(h.action);
+    return `
+      <div class="hist-item">
+        <div class="hist-step">Step ${h.step} · ${h.action.bug_id}</div>
+        <div class="hist-action">${actionLabel}</div>
+        <div class="hist-reward ${rewClass}">${rewSign}${rew.toFixed(2)}</div>
+        ${h.msg ? `<div class="hist-msg">${h.msg.slice(0,80)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function formatActionLabel(a) {
+  switch(a.action_type) {
+    case 'classify':       return `Classify → ${a.severity}`;
+    case 'assign':         return `Assign → ${a.assigned_team}`;
+    case 'request_info':   return `Request Info`;
+    case 'mark_duplicate': return `Duplicate of ${a.duplicate_of}`;
+    case 'escalate':       return `Escalate`;
+    case 'submit':         return `✓ Submit`;
+    default: return a.action_type;
+  }
+}
+
+// ── Bug selection ─────────────────────────────────────────
+function selectBug(bugId) {
+  state.selectedBugId = bugId;
+  document.getElementById('action-bug-id').value = bugId;
+  onBugIdChange();
+  // pre-fill severity if already classified
+  const obs = state.obs;
+  if (obs?.current_classifications[bugId]) {
+    document.getElementById('action-severity').value = obs.current_classifications[bugId];
+  }
+  if (obs?.current_assignments[bugId]) {
+    document.getElementById('action-team').value = obs.current_assignments[bugId];
+  }
+  renderBugCards(obs);
+}
+
+// ── Toggle show all ───────────────────────────────────────
+function toggleShowAll() {
+  state.showAll = !state.showAll;
+  document.getElementById('toggle-all-label').textContent = state.showAll ? 'Hide Submitted' : 'Show All';
+  renderBugCards(state.obs);
+}
+
+// ── Bug detail modal ──────────────────────────────────────
+function showBugDetail(bug, obs) {
+  const sev   = obs.current_classifications[bug.id] || 'unclassified';
+  const team  = obs.current_assignments[bug.id]     || 'unassigned';
+  const dup   = obs.duplicate_map[bug.id];
+  const esc   = obs.escalated_bug_ids.includes(bug.id);
+
+  let html = `
+    <h2>${bug.id}: ${bug.title}</h2>
+    <div class="detail-grid">
+      <div class="detail-item"><div class="d-label">Product</div><div class="d-val">${bug.product}</div></div>
+      <div class="detail-item"><div class="d-label">Version</div><div class="d-val">${bug.version}</div></div>
+      <div class="detail-item"><div class="d-label">Reporter</div><div class="d-val">${bug.reporter}</div></div>
+      <div class="detail-item"><div class="d-label">Customer Tier</div><div class="d-val">${bug.customer_tier || '—'}</div></div>
+      <div class="detail-item"><div class="d-label">SLA Remaining</div><div class="d-val ${bug.sla_hours_remaining < 2 ? 'sla-urgent' : ''}">${bug.sla_hours_remaining != null ? bug.sla_hours_remaining.toFixed(1) + 'h' : 'None'}</div></div>
+      <div class="detail-item"><div class="d-label">Timestamp</div><div class="d-val">${bug.timestamp}</div></div>
+    </div>
+    <div class="detail-grid" style="margin-bottom:14px">
+      <div class="detail-item"><div class="d-label">Current Severity</div><div class="d-val"><span class="pill sev-${sev}">${sev}</span></div></div>
+      <div class="detail-item"><div class="d-label">Current Team</div><div class="d-val">${team !== 'unassigned' ? `<span class="pill team-pill">${team}</span>` : '—'}</div></div>
+      <div class="detail-item"><div class="d-label">Escalated</div><div class="d-val">${esc ? '✅ Yes' : 'No'}</div></div>
+      <div class="detail-item"><div class="d-label">Duplicate Of</div><div class="d-val">${dup || '—'}</div></div>
+    </div>`;
+
+  if (!bug.steps_to_reproduce || !bug.environment_info) {
+    html += `<div class="missing-warn">⚠️ Missing info: ${[!bug.steps_to_reproduce?'steps_to_reproduce':'', !bug.environment_info?'environment_info':''].filter(Boolean).join(', ')}</div>`;
+  }
+
+  html += `<div class="desc-box">${bug.description}</div>`;
+
+  if (bug.expected_behavior) html += `<div style="margin-bottom:8px"><span style="font-size:11px;color:var(--muted)">EXPECTED:</span><br>${bug.expected_behavior}</div>`;
+  if (bug.actual_behavior)   html += `<div style="margin-bottom:8px"><span style="font-size:11px;color:var(--muted)">ACTUAL:</span><br>${bug.actual_behavior}</div>`;
+  if (bug.steps_to_reproduce) html += `<div style="margin-bottom:8px"><span style="font-size:11px;color:var(--muted)">STEPS TO REPRODUCE:</span><div class="steps-box">${bug.steps_to_reproduce}</div></div>`;
+  if (bug.environment_info)   html += `<div style="margin-bottom:8px"><span style="font-size:11px;color:var(--muted)">ENVIRONMENT:</span><div class="steps-box">${JSON.stringify(bug.environment_info, null, 2)}</div></div>`;
+  if (bug.linked_bug_ids?.length) html += `<div style="margin-top:8px;font-size:12px;color:var(--muted)">Linked bugs: ${bug.linked_bug_ids.join(', ')}</div>`;
+
+  html += `<div style="margin-top:14px"><button onclick="selectBug('${bug.id}');document.getElementById('modal').style.display='none'" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer">Select This Bug</button></div>`;
+
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal').style.display = 'flex';
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal')) document.getElementById('modal').style.display = 'none';
+}
+
+// ── Init ──────────────────────────────────────────────────
+updateDynamicFields();
+</script>
+</body>
+</html>

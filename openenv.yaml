@@ -1,0 +1,34 @@
+spec_version: 1
+name: bugtriage
+type: environment
+runtime: docker
+app: server/app.py
+port: 7860
+
+description: >
+  BugTriage OpenEnv simulates the real-world workflow of a software triage engineer
+  processing incoming bug reports. The agent classifies severity, routes to the correct
+  team, detects duplicate submissions, requests missing information, escalates critical
+  incidents, and submits decisions — all within a step budget.
+
+tasks:
+  - id: single-triage
+    name: "Single Critical Bug Triage"
+    difficulty: easy
+    max_steps: 5
+    reward_threshold: 0.80
+    description: "Triage one production-down payment failure. Classify, assign, submit."
+
+  - id: batch-triage
+    name: "Batch Bug Triage with Duplicate Detection"
+    difficulty: medium
+    max_steps: 32
+    reward_threshold: 0.65
+    description: "Process 8 bug reports. Detect duplicates, request info, escalate security issues."
+
+  - id: sla-crisis
+    name: "SLA Crisis: Mass Bug Surge with Escalations"
+    difficulty: hard
+    max_steps: 50
+    reward_threshold: 0.50
+    description: "15 simultaneous bugs: 3 duplicate pairs, 5 SLA breaches, enterprise escalations."
