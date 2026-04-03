@@ -2,7 +2,7 @@
 title: BugTriage OpenEnv
 emoji: 🐛
 colorFrom: red
-colorTo: orange
+colorTo: yellow
 sdk: docker
 pinned: true
 tags:
