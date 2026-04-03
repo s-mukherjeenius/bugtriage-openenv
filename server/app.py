@@ -56,7 +56,7 @@ else:
 # Extra endpoints on top of the standard ones
 # ---------------------------------------------------------------------------
 
-_UI_FILE = Path(__file__).parent / "ui.html"
+_UI_FILE = Path(__file__).parent.parent / "app" / "ui.html"
 
 
 @app.get("/ui", include_in_schema=False)
