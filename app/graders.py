@@ -4,14 +4,16 @@ BugTriage OpenEnv — Deterministic Graders
 Each grader scores a completed (or partial) BugTriageState against ground truth.
 All graders return float in [0.0, 1.0] and are fully reproducible.
 
+Graders are GENERIC — they derive all bug IDs and expected actions from
+the scenario's ground_truth dict, not from hardcoded IDs. This allows
+both static scenarios and dynamically generated scenarios to be graded
+by the same code.
+
 Step-level rewards:
   Correct actions   → positive reward (+0.10 to +0.20)
   Adjacent/partial  → small positive   (+0.03 to +0.06)
   Wrong actions     → negative reward  (-0.05 to -0.15)
   Invalid actions   → penalty          (-0.05 to -0.08)
-
-This reward structure gives the agent a strong, continuous learning signal
-at every step, enabling both policy-gradient and value-based RL methods.
 """
 from __future__ import annotations
 
@@ -52,8 +54,6 @@ def _efficiency_factor(steps_used: int, max_steps: int, n_bugs: int) -> float:
     """
     Bonus multiplier (0.85 → 1.0) based on how efficiently the agent used steps.
     Minimum steps needed = 3 * n_bugs (classify + assign + submit per bug).
-    At minimum steps → 1.0;  at max_steps → 0.85.
-    Only meaningful when the episode has actually made progress.
     """
     min_steps = 3 * n_bugs
     if max_steps <= min_steps:
@@ -75,18 +75,7 @@ def compute_step_reward(
 ) -> Tuple[float, str]:
     """
     Returns (reward, message) for a single step action.
-
-    Reward magnitudes:
-      Correct classify    : +0.15   (adjacent: +0.06)
-      Correct assign      : +0.12
-      Correct duplicate   : +0.18
-      Correct escalate    : +0.12
-      Correct info request: +0.10
-      Complete submit     : +0.08   (partial: +0.02)
-      Wrong action        : -0.08 to -0.15
-      Invalid/wasteful    : -0.05
-
-    These magnitudes ensure clear gradient signal for RL training.
+    Already generic — reads from scenario.ground_truth.
     """
     gt = scenario.ground_truth.get(bug_id)
     if gt is None:
@@ -165,7 +154,7 @@ def compute_step_reward(
 
 
 # ---------------------------------------------------------------------------
-# Episode-level grader: Task 1 — single-triage
+# Episode-level grader: Task 1 — single-triage (EASY)
 # ---------------------------------------------------------------------------
 
 def grade_single_triage(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
@@ -173,16 +162,16 @@ def grade_single_triage(state: "BugTriageState", scenario: "TaskScenario") -> Di
     Weights:
       severity correct          40%
       team correct              30%
-      no unnecessary info req   15%  (only scored if bug was classified)
-      escalation when expected  10%  (binary — no partial credit for inaction)
-      efficiency bonus           5%  (only scored if bug was submitted)
+      no unnecessary info req   15%
+      escalation when expected  10%
+      efficiency bonus           5%
     """
-    bug_id = "PAY-001"
+    bug_id = scenario.bug_reports[0].id
     gt = scenario.ground_truth[bug_id]
     components: Dict[str, float] = {}
 
     bug_classified = bug_id in state.classifications
-    bug_submitted  = bug_id in state.submitted_bugs
+    bug_submitted = bug_id in state.submitted_bugs
 
     # Severity (40%)
     classified = state.classifications.get(bug_id, "")
@@ -194,7 +183,6 @@ def grade_single_triage(state: "BugTriageState", scenario: "TaskScenario") -> Di
     components["team"] = (1.0 if assigned == gt.team else 0.0) * 0.30
 
     # No unnecessary info request (15%)
-    # Only meaningful once the bug has been classified — inaction doesn't earn credit.
     if bug_classified:
         requested_info = bug_id in state.info_requests
         no_waste = 0.0 if (requested_info and not gt.needs_info) else 1.0
@@ -202,17 +190,17 @@ def grade_single_triage(state: "BugTriageState", scenario: "TaskScenario") -> Di
         no_waste = 0.0
     components["no_wasted_info"] = no_waste * 0.15
 
-    # Escalation (10%) — binary, no partial credit for not escalating
+    # Escalation (10%)
     escalated = bug_id in state.escalations
     if escalated and gt.should_escalate:
         esc_score = 1.0
     elif escalated and not gt.should_escalate:
-        esc_score = -0.5   # penalty for unwarranted escalation
+        esc_score = -0.5
     else:
-        esc_score = 0.0    # not escalated → no credit, no penalty
+        esc_score = 0.0
     components["escalation"] = _clamp(esc_score) * 0.10
 
-    # Efficiency (5%) — only meaningful once the bug has been submitted
+    # Efficiency (5%)
     if bug_submitted and state.step_number > 0:
         eff = _efficiency_factor(state.step_number, scenario.max_steps, len(scenario.bug_reports))
     else:
@@ -224,25 +212,27 @@ def grade_single_triage(state: "BugTriageState", scenario: "TaskScenario") -> Di
 
 
 # ---------------------------------------------------------------------------
-# Episode-level grader: Task 2 — batch-triage
+# Episode-level grader: Task 2 — batch-triage (MEDIUM)
 # ---------------------------------------------------------------------------
 
 def grade_batch_triage(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
     """
     Weights:
-      severity accuracy (all 8)        30%
-      team accuracy (all 8)            25%
-      duplicate detection (1 pair)     20%
-      info request for BUG-005         10%
-      security escalation (BUG-007)    10%
-      efficiency                        5%  (only if bugs submitted)
+      severity accuracy          30%
+      team accuracy              25%
+      duplicate detection        20%
+      info request quality       10%
+      escalation correctness     10%
+      efficiency                  5%
+
+    All IDs derived from ground truth — works with static AND generated scenarios.
     """
     gt_map = scenario.ground_truth
     bug_ids = [b.id for b in scenario.bug_reports]
     n = len(bug_ids)
     components: Dict[str, float] = {}
 
-    # Severity accuracy (30%) — partial credit for adjacent
+    # Severity accuracy (30%)
     sev_scores = []
     for bid in bug_ids:
         gt = gt_map[bid]
@@ -257,34 +247,56 @@ def grade_batch_triage(state: "BugTriageState", scenario: "TaskScenario") -> Dic
     )
     components["team"] = (team_correct / n) * 0.25
 
-    # Duplicate detection (20%) — BUG-003 must be marked duplicate of BUG-006
-    dup_detected = state.duplicates.get("BUG-003") == "BUG-006"
-    false_dups = sum(
-        1 for bid, orig in state.duplicates.items()
-        if gt_map.get(bid) and gt_map[bid].is_duplicate_of is None
-    )
-    dup_score = (1.0 if dup_detected else 0.0) - false_dups * 0.25
+    # Duplicate detection (20%) — derived from ground truth
+    expected_dups = {bid: gt.is_duplicate_of for bid, gt in gt_map.items() if gt.is_duplicate_of}
+    if expected_dups:
+        dup_hits = sum(
+            1 for dup_id, orig_id in expected_dups.items()
+            if state.duplicates.get(dup_id) == orig_id
+        )
+        false_dups = sum(
+            1 for bid in state.duplicates
+            if bid not in expected_dups
+        )
+        dup_score = (dup_hits / len(expected_dups)) - false_dups * 0.25
+    else:
+        dup_score = 1.0  # no duplicates expected → full credit for not marking any
+        if state.duplicates:
+            dup_score = 0.0  # penalise false duplicate claims
     components["duplicate_detection"] = _clamp(dup_score) * 0.20
 
-    # Info request for BUG-005 (10%)
-    info_req_correct = "BUG-005" in state.info_requests and len(state.info_requests["BUG-005"]) > 0
-    info_req_false = sum(
-        1 for bid in bug_ids
-        if bid != "BUG-005" and bid in state.info_requests and not gt_map[bid].needs_info
-    )
-    info_score = (1.0 if info_req_correct else 0.0) - info_req_false * 0.15
+    # Info request quality (10%) — derived from ground truth
+    info_needed = [bid for bid, gt in gt_map.items() if gt.needs_info]
+    if info_needed:
+        info_hits = sum(1 for bid in info_needed if bid in state.info_requests)
+        false_info = sum(
+            1 for bid in state.info_requests
+            if bid not in info_needed and not gt_map.get(bid, BugGroundTruthStub()).needs_info
+        )
+        info_score = (info_hits / len(info_needed)) - false_info * 0.15
+    else:
+        info_score = 1.0
+        if state.info_requests:
+            false_count = sum(1 for bid in state.info_requests if not gt_map.get(bid, BugGroundTruthStub()).needs_info)
+            info_score = max(0.0, 1.0 - false_count * 0.15)
     components["info_request"] = _clamp(info_score) * 0.10
 
-    # Security escalation for BUG-007 (10%)
-    sec_escalated = "BUG-007" in state.escalations
-    unnecessary_escalations = sum(
-        1 for bid in bug_ids
-        if bid in state.escalations and bid != "BUG-007" and not gt_map[bid].should_escalate
-    )
-    sec_score = (1.0 if sec_escalated else 0.0) - unnecessary_escalations * 0.2
-    components["security_escalation"] = _clamp(sec_score) * 0.10
+    # Escalation correctness (10%) — derived from ground truth
+    should_escalate = [bid for bid, gt in gt_map.items() if gt.should_escalate]
+    if should_escalate:
+        esc_hits = sum(1 for bid in should_escalate if bid in state.escalations)
+        unnecessary = sum(
+            1 for bid in state.escalations
+            if bid not in should_escalate
+        )
+        esc_score = (esc_hits / len(should_escalate)) - unnecessary * 0.2
+    else:
+        esc_score = 1.0
+        if state.escalations:
+            esc_score = max(0.0, 1.0 - len(state.escalations) * 0.2)
+    components["security_escalation"] = _clamp(esc_score) * 0.10
 
-    # Efficiency (5%) — only if episode has made progress with submissions
+    # Efficiency (5%)
     if state.submitted_bugs and state.step_number > 0:
         eff = _efficiency_factor(state.step_number, scenario.max_steps, n)
     else:
@@ -296,18 +308,20 @@ def grade_batch_triage(state: "BugTriageState", scenario: "TaskScenario") -> Dic
 
 
 # ---------------------------------------------------------------------------
-# Episode-level grader: Task 3 — sla-crisis
+# Episode-level grader: Task 3 — sla-crisis (HARD)
 # ---------------------------------------------------------------------------
 
 def grade_sla_crisis(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
     """
     Weights:
-      severity accuracy (15 bugs)      25%
-      team accuracy (15 bugs)          20%
-      duplicate detection (3 pairs)    20%
-      SLA-critical escalations         20%
-      info requests for incomplete     10%
-      efficiency                        5%  (only if bugs submitted)
+      severity accuracy          25%
+      team accuracy              20%
+      duplicate detection        20%
+      SLA-critical escalations   20%
+      info requests              10%
+      efficiency                  5%
+
+    All IDs derived from ground truth — works with static AND generated scenarios.
     """
     gt_map = scenario.ground_truth
     bug_ids = [b.id for b in scenario.bug_reports]
@@ -329,48 +343,53 @@ def grade_sla_crisis(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
     )
     components["team"] = (team_correct / n) * 0.20
 
-    # Duplicate detection (20%) — 3 correct pairs
-    expected_dups = {
-        "CRI-009": "CRI-003",
-        "CRI-011": "CRI-004",
-        "CRI-012": "CRI-007",
-    }
-    dup_hits = sum(
-        1 for dup_id, orig_id in expected_dups.items()
-        if state.duplicates.get(dup_id) == orig_id
-    )
-    false_dup_count = sum(
-        1 for bid in state.duplicates
-        if bid not in expected_dups
-    )
-    dup_score = (dup_hits / len(expected_dups)) - false_dup_count * 0.15
+    # Duplicate detection (20%) — derived from ground truth
+    expected_dups = {bid: gt.is_duplicate_of for bid, gt in gt_map.items() if gt.is_duplicate_of}
+    if expected_dups:
+        dup_hits = sum(
+            1 for dup_id, orig_id in expected_dups.items()
+            if state.duplicates.get(dup_id) == orig_id
+        )
+        false_dup_count = sum(1 for bid in state.duplicates if bid not in expected_dups)
+        dup_score = (dup_hits / len(expected_dups)) - false_dup_count * 0.15
+    else:
+        dup_score = 1.0
     components["duplicate_detection"] = _clamp(dup_score) * 0.20
 
-    # SLA-critical escalations (20%)
+    # SLA-critical escalations (20%) — derived from ground truth
     sla_critical_ids = [bid for bid, gt in gt_map.items() if gt.sla_critical and gt.should_escalate]
-    escalated_count = 0
-    for sla_id in sla_critical_ids:
-        if sla_id in state.escalations:
-            escalated_count += 1
-        elif sla_id == "CRI-011" and "CRI-004" in state.escalations:
-            escalated_count += 1  # duplicate resolved — original was escalated
-    sla_score = escalated_count / len(sla_critical_ids) if sla_critical_ids else 1.0
-    low_sev_escalated = sum(
-        1 for bid in state.escalations
-        if gt_map.get(bid) and gt_map[bid].severity in ("low", "medium")
-        and not gt_map[bid].should_escalate
-    )
-    sla_score -= low_sev_escalated * 0.10
+    if sla_critical_ids:
+        escalated_count = 0
+        for sla_id in sla_critical_ids:
+            if sla_id in state.escalations:
+                escalated_count += 1
+            else:
+                # Check if this bug was a duplicate and the original was escalated
+                gt = gt_map[sla_id]
+                if gt.is_duplicate_of and gt.is_duplicate_of in state.escalations:
+                    escalated_count += 1
+        sla_score = escalated_count / len(sla_critical_ids)
+        low_sev_escalated = sum(
+            1 for bid in state.escalations
+            if gt_map.get(bid) and gt_map[bid].severity in ("low", "medium")
+            and not gt_map[bid].should_escalate
+        )
+        sla_score -= low_sev_escalated * 0.10
+    else:
+        sla_score = 1.0
     components["sla_escalations"] = _clamp(sla_score) * 0.20
 
-    # Info requests (10%) — CRI-005 and CRI-014 need info
+    # Info requests (10%) — derived from ground truth
     info_needed = [bid for bid, gt in gt_map.items() if gt.needs_info]
-    info_hits = sum(1 for bid in info_needed if bid in state.info_requests)
-    false_info = sum(1 for bid in state.info_requests if bid not in info_needed)
-    info_score = (info_hits / len(info_needed)) - false_info * 0.10
+    if info_needed:
+        info_hits = sum(1 for bid in info_needed if bid in state.info_requests)
+        false_info = sum(1 for bid in state.info_requests if bid not in info_needed)
+        info_score = (info_hits / len(info_needed)) - false_info * 0.10
+    else:
+        info_score = 1.0
     components["info_requests"] = _clamp(info_score) * 0.10
 
-    # Efficiency (5%) — only if episode has made progress with submissions
+    # Efficiency (5%)
     if state.submitted_bugs and state.step_number > 0:
         eff = _efficiency_factor(state.step_number, scenario.max_steps, n)
     else:
@@ -379,6 +398,14 @@ def grade_sla_crisis(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
 
     total = _clamp(sum(components.values()))
     return {"score": round(total, 4), "components": {k: round(v, 4) for k, v in components.items()}}
+
+
+# ---------------------------------------------------------------------------
+# Helper stub for safe .needs_info access
+# ---------------------------------------------------------------------------
+
+class BugGroundTruthStub:
+    needs_info = False
 
 
 # ---------------------------------------------------------------------------

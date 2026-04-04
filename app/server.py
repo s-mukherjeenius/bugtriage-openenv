@@ -1,7 +1,7 @@
 """
 BugTriage OpenEnv — FastAPI HTTP Server
 Implements the OpenEnv HTTP interface:
-  POST /reset   → ResetResult
+  POST /reset   → ResetResult    (optional: {"task": "...", "seed": 42})
   POST /step    → StepResult
   GET  /state   → BugTriageState
   POST /grade   → score + components
@@ -61,6 +61,7 @@ def _get_env() -> BugTriageEnv:
 
 class ResetRequest(BaseModel):
     task: Optional[str] = "single-triage"
+    seed: Optional[int] = None  # If provided, generates a dynamic scenario
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ def reset(request: ResetRequest = ResetRequest()) -> ResetResult:
         raise HTTPException(status_code=422,
                             detail=f"Unknown task '{task_name}'. Available: {list(SCENARIOS.keys())}")
     _env = BugTriageEnv(task_name)
-    return _env.reset()
+    return _env.reset(seed=request.seed)
 
 
 @app.post("/step", response_model=StepResult)

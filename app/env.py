@@ -1,6 +1,9 @@
 """
 BugTriage OpenEnv — Environment Core
 Implements the OpenEnv interface: reset(), step(), state(), grade().
+
+Supports both static scenarios (reproducible for evaluation) and
+dynamic scenario generation (seed-based, for RL training).
 """
 from __future__ import annotations
 
@@ -47,7 +50,8 @@ class BugTriageEnv:
 
     Lifecycle:
         env = BugTriageEnv("single-triage")
-        result = env.reset()
+        result = env.reset()            # static scenario (reproducible)
+        result = env.reset(seed=42)     # dynamic scenario (new bugs each seed)
         result = env.step(action)
         state  = env.state()
         grade  = env.grade()
@@ -63,8 +67,18 @@ class BugTriageEnv:
         self._state: Optional[BugTriageState] = None
         self._action_history: list = []
 
-    def reset(self) -> ResetResult:
-        """Reset the environment and return the initial observation."""
+    def reset(self, seed: Optional[int] = None) -> ResetResult:
+        """
+        Reset the environment and return the initial observation.
+
+        Args:
+            seed: If provided, generates a fresh scenario from this seed.
+                  If None, uses the static (default) scenario for reproducible evaluation.
+        """
+        if seed is not None:
+            from app.generator import generate_scenario
+            self._scenario = generate_scenario(self.task_name, seed)
+
         self._state = BugTriageState(
             task_name=self.task_name,
             step_number=0,
@@ -84,7 +98,12 @@ class BugTriageEnv:
         return ResetResult(
             observation=self._make_observation(),
             done=False,
-            info={"task": self.task_name, "version": self.VERSION},
+            info={
+                "task": self.task_name,
+                "version": self.VERSION,
+                "generated": seed is not None,
+                "seed": seed,
+            },
         )
 
     def step(self, action: TriageAction) -> StepResult:
