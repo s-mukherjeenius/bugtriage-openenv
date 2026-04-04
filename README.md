@@ -1,3 +1,14 @@
+---
+title: BugTriage OpenEnv
+emoji: 🐛
+colorFrom: red
+colorTo: orange
+sdk: docker
+app_port: 7860
+tags:
+  - openenv
+---
+
 # BugTriage OpenEnv
 
 **An OpenEnv-compliant reinforcement learning environment for software bug triage.**
@@ -10,7 +21,7 @@ BugTriage simulates the real-world workflow of a triage engineer: classifying se
 
 ```bash
 # Clone and install
-git clone <your-repo-url>
+git clone https://github.com/s-mukherjeenius/bugtriage-openenv.git
 cd bugtriage-openenv
 pip install -r requirements.txt
 
