@@ -7,23 +7,24 @@ Outputs strictly-formatted [START] / [STEP] / [END] log lines for evaluation.
 Mandatory environment variables:
   API_BASE_URL   The API endpoint for the LLM.
   MODEL_NAME     The model identifier to use for inference.
-  HF_TOKEN       Your HuggingFace / API key.
+  HF_TOKEN       Your Hugging Face / API key.
 
 Optional:
   ENV_URL        BugTriage server base URL (default: http://localhost:7860)
 
-Stdout format (exactly as specified — do NOT modify):
+STDOUT FORMAT (must match exactly — any deviation = incorrect scoring):
   [START] task=<task_name> env=<benchmark> model=<model_name>
   [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-  [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
+  [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
 
 Rules:
   - One [START] line at episode begin.
   - One [STEP] line per step, immediately after env.step() returns.
   - One [END] line always emitted (even on exception) via finally block.
   - reward and rewards formatted to 2 decimal places.
+  - score formatted to 3 decimal places.
   - done and success are lowercase booleans: true or false.
-  - error is the error string, or null if none.
+  - error is the raw error string, or null if none.
   - All fields on a single line with no newlines within a line.
 """
 from __future__ import annotations
@@ -45,23 +46,17 @@ from openai import OpenAI
 
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-# Reads credentials from HF_TOKEN, OPENAI_API_KEY, or API_KEY (in priority order)
-API_KEY: str      = (
-    os.getenv("HF_TOKEN")
-    or os.getenv("OPENAI_API_KEY")
-    or os.getenv("API_KEY")
-    or "hf-placeholder"
-)
+API_KEY: str      = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "hf-placeholder"
 ENV_URL: str      = os.getenv("ENV_URL", "http://localhost:7860").rstrip("/")
 
 BENCHMARK: str         = "bugtriage-openenv"
 TEMPERATURE: float     = 0.2
-MAX_TOKENS: int        = 256
+MAX_TOKENS: int        = 300
 SUCCESS_THRESHOLD: float = 0.50
+MAX_LLM_RETRIES: int  = 2
 
 TASKS: List[str] = ["single-triage", "batch-triage", "sla-crisis"]
 
-# Must match scenario max_steps exactly
 MAX_STEPS: Dict[str, int] = {
     "single-triage": 5,
     "batch-triage":  32,
@@ -70,7 +65,7 @@ MAX_STEPS: Dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
-# Mandatory log helpers — field names and ordering must not be changed
+# Mandatory log helpers — match sample inference.py EXACTLY
 # ---------------------------------------------------------------------------
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -79,23 +74,14 @@ def log_start(task: str, env: str, model: str) -> None:
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
-    done_val  = str(done).lower()
-    # Sanitise — spec requires single line, no embedded newlines
+    done_val = str(done).lower()
     action_safe = action.replace("\n", " ").replace("\r", "")[:200]
-    print(
-        f"[STEP] step={step} action={action_safe} reward={reward:.2f} "
-        f"done={done_val} error={error_val}",
-        flush=True,
-    )
+    print(f"[STEP] step={step} action={action_safe} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    # Format matches sample exactly: success= steps= rewards= (no score= field)
-    print(
-        f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}",
-        flush=True,
-    )
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -143,88 +129,123 @@ class BugTriageClient:
 # LLM prompts
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = textwrap.dedent("""
-You are an expert software triage engineer. Your job is to process bug reports
-by taking exactly ONE triage action per response.
+SYSTEM_PROMPT = textwrap.dedent("""\
+You are an expert software triage engineer processing bug reports.
+Respond with ONLY a single valid JSON object — no markdown, no explanation.
 
-Available action_types and their required fields:
-  classify      → {"action_type": "classify",      "bug_id": "...", "severity": "critical|high|medium|low"}
-  assign        → {"action_type": "assign",         "bug_id": "...", "assigned_team": "backend|frontend|mobile|infrastructure|security|database|qa"}
-  request_info  → {"action_type": "request_info",   "bug_id": "...", "info_requested": ["item1", "item2"]}
-  mark_duplicate→ {"action_type": "mark_duplicate", "bug_id": "...", "duplicate_of": "ORIGINAL-ID"}
-  escalate      → {"action_type": "escalate",       "bug_id": "...", "escalation_reason": "brief reason"}
-  submit        → {"action_type": "submit",          "bug_id": "..."}
+Action formats (exactly one per response):
+  {"action_type":"classify","bug_id":"ID","severity":"critical|high|medium|low"}
+  {"action_type":"assign","bug_id":"ID","assigned_team":"backend|frontend|mobile|infrastructure|security|database|qa"}
+  {"action_type":"request_info","bug_id":"ID","info_requested":["item1","item2"]}
+  {"action_type":"mark_duplicate","bug_id":"ID","duplicate_of":"ORIGINAL-ID"}
+  {"action_type":"escalate","bug_id":"ID","escalation_reason":"reason"}
+  {"action_type":"submit","bug_id":"ID"}
 
-Decision guidelines:
-- Severity: critical=production down/security breach, high=major feature broken,
-            medium=notable bug with workaround, low=cosmetic/minor.
-- Teams: security→security; auth/payments/APIs→backend; CSS/UI→frontend;
-         iOS/Android→mobile; DB queries→database; servers→infrastructure; tests→qa.
-- Duplicates: mark the LATER-submitted report as duplicate of the EARLIER one.
-- Request info ONLY when steps_to_reproduce AND environment_info are both absent.
-- Escalate: critical security bugs + enterprise SLA <4h critical/high bugs.
-- Submit after classify + assign (+ any optional actions) are complete.
+SEVERITY RULES:
+  critical = production down OR security breach OR 100% users affected OR data loss
+  high     = major feature broken, crash, OOM, data integrity issue, significant user impact
+  medium   = notable bug with workaround, intermittent issues with partial info
+  low      = cosmetic, typo, alignment, tooltip wrapping, minor UI issues
 
-CRITICAL: Respond with ONLY a valid JSON object. No markdown, no explanation.
-Example: {"action_type": "classify", "bug_id": "BUG-007", "severity": "critical"}
-""").strip()
+TEAM RULES:
+  security       → auth vulnerabilities, token issues, rate limit bypass, session exploits
+  backend        → API errors, payment processing, webhook failures, server crashes, billing, CSV/export bugs
+  frontend       → CSS, UI layout, dark mode, contrast, button alignment, display issues
+  mobile         → iOS/Android app crashes, mobile-specific bugs
+  database       → SQL queries, indexing, DB performance, PostgreSQL issues
+  infrastructure → server nodes, cluster outages, primary DB node down, deployment
+  qa             → test infrastructure
+
+DUPLICATE RULES:
+  - Two bugs are duplicates if they describe the SAME root cause
+  - Mark the LATER-filed report (higher timestamp) as duplicate of the EARLIER one
+
+ESCALATION RULES:
+  - Escalate if: sla_hours_remaining < 2.0
+  - Escalate if: enterprise customer + critical or high severity
+  - Escalate if: security vulnerability with active exploit
+
+REQUEST_INFO RULES:
+  - ONLY when BOTH steps_to_reproduce AND environment_info are completely absent/null
+
+WORKFLOW per bug: classify → assign → (optional: escalate/request_info/mark_duplicate) → submit
+Always classify and assign BEFORE submitting.""")
 
 
 def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
-    unprocessed    = obs.get("unprocessed_bug_ids", [])
-    submitted      = obs.get("submitted_bug_ids", [])
-    steps_remaining= obs.get("steps_remaining", 0)
-    classifications= obs.get("current_classifications", {})
-    assignments    = obs.get("current_assignments", {})
-    duplicates     = obs.get("duplicate_map", {})
-    escalations    = obs.get("escalated_bug_ids", [])
-    action_history = obs.get("action_history", [])
+    """Build a concise prompt from the observation."""
+    unprocessed     = obs.get("unprocessed_bug_ids", [])
+    submitted       = obs.get("submitted_bug_ids", [])
+    steps_remaining = obs.get("steps_remaining", 0)
+    classifications = obs.get("current_classifications", {})
+    assignments     = obs.get("current_assignments", {})
+    duplicates      = obs.get("duplicate_map", {})
+    escalations     = obs.get("escalated_bug_ids", [])
+    action_history  = obs.get("action_history", [])
 
     bug_summaries = []
     for bug in obs.get("bug_reports", []):
-        bid = bug["id"]
+        bid = bug.get("id", "") if isinstance(bug, dict) else bug.id
         if bid not in unprocessed:
             continue
+
         classified = classifications.get(bid, "NOT SET")
         assigned   = assignments.get(bid,   "NOT SET")
         dup        = duplicates.get(bid, "")
         esc        = "YES" if bid in escalations else "no"
-        sla        = bug.get("sla_hours_remaining")
-        sla_str    = f"{sla:.1f}h" if sla is not None else "none"
-        tier       = bug.get("customer_tier", "unknown")
 
-        summary = (
-            f"  {bid}: [{classified}|{assigned}] sla={sla_str} tier={tier} esc={esc}"
-        )
-        if dup:
-            summary += f" DUP_OF={dup}"
-        if not bug.get("steps_to_reproduce"):
-            summary += " [MISSING:steps]"
-        if not bug.get("environment_info"):
-            summary += " [MISSING:env]"
+        if isinstance(bug, dict):
+            title = bug.get("title", "")[:120]
+            desc  = bug.get("description", "")[:250].replace("\n", " ")
+            sla   = bug.get("sla_hours_remaining")
+            tier  = bug.get("customer_tier", "unknown")
+            product = bug.get("product", "")
+            has_steps = bool(bug.get("steps_to_reproduce"))
+            has_env   = bool(bug.get("environment_info"))
+            timestamp = bug.get("timestamp", "")
+            linked    = bug.get("linked_bug_ids", []) or []
+        else:
+            title = getattr(bug, "title", "")[:120]
+            desc  = getattr(bug, "description", "")[:250].replace("\n", " ")
+            sla   = getattr(bug, "sla_hours_remaining", None)
+            tier  = getattr(bug, "customer_tier", "unknown")
+            product = getattr(bug, "product", "")
+            has_steps = bool(getattr(bug, "steps_to_reproduce", None))
+            has_env   = bool(getattr(bug, "environment_info", None))
+            timestamp = getattr(bug, "timestamp", "")
+            linked    = getattr(bug, "linked_bug_ids", []) or []
+
+        sla_str = f"{sla:.1f}h" if sla is not None else "none"
+        missing = []
+        if not has_steps: missing.append("steps_to_reproduce")
+        if not has_env:   missing.append("environment_info")
+
+        summary = f"\n  {bid}: severity={classified} team={assigned} sla={sla_str} tier={tier} esc={esc}"
+        if dup:      summary += f" DUP_OF={dup}"
+        if missing:  summary += f" MISSING=[{','.join(missing)}]"
+        if linked:   summary += f" linked={linked}"
+        summary += f"\n    Title: {title}"
+        summary += f"\n    Desc: {desc}"
+        summary += f"\n    Product: {product} | Time: {timestamp}"
         bug_summaries.append(summary)
-        bug_summaries.append(f"    Title: {bug['title'][:100]}")
-        desc = bug.get("description", "")[:150].replace("\n", " ")
-        bug_summaries.append(f"    Desc:  {desc}...")
 
     history_lines = [
-        f"  Step {h['step']}: {h['action_type']} {h['bug_id']} → {h.get('message','')[:80]}"
-        for h in action_history[-5:]
+        f"  Step {h.get('step',0)}: {h.get('action_type','')} {h.get('bug_id','')} → r={h.get('reward',0):+.2f} {h.get('message','')[:80]}"
+        for h in action_history[-8:]
     ]
 
-    return textwrap.dedent(f"""
-        Step {step_num} | Steps remaining: {steps_remaining}
-        Unprocessed ({len(unprocessed)}): {', '.join(unprocessed)}
-        Submitted:   {', '.join(submitted) if submitted else 'none'}
+    return textwrap.dedent(f"""\
+Step {step_num} | Steps remaining: {steps_remaining}
+Unprocessed ({len(unprocessed)}): {', '.join(unprocessed)}
+Submitted ({len(submitted)}): {', '.join(submitted) if submitted else 'none'}
 
-        Bug status:
-        {chr(10).join(bug_summaries) if bug_summaries else '  All bugs submitted.'}
+Bugs needing action:
+{''.join(bug_summaries) if bug_summaries else '  All bugs processed.'}
 
-        Recent actions:
-        {chr(10).join(history_lines) if history_lines else '  None yet.'}
+Recent actions:
+{chr(10).join(history_lines) if history_lines else '  None yet.'}
 
-        Output ONE JSON action now.
-    """).strip()
+Output ONE JSON action now.""")
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -248,50 +269,88 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_llm_action(
-    client: OpenAI,
-    obs: Dict[str, Any],
-    step_num: int,
-    unprocessed: List[str],
-) -> Dict[str, Any]:
-    """Call the LLM and return a parsed action dict with deterministic fallback."""
+def _heuristic_action(obs: Dict[str, Any]) -> Dict[str, Any]:
+    """Deterministic fallback when LLM fails."""
+    unprocessed     = obs.get("unprocessed_bug_ids", [])
+    classifications = obs.get("current_classifications", {})
+    assignments     = obs.get("current_assignments", {})
+
+    if not unprocessed:
+        return {"action_type": "submit", "bug_id": "unknown"}
+
+    bug_id = unprocessed[0]
+    bug_data = {}
+    for b in obs.get("bug_reports", []):
+        if isinstance(b, dict) and b.get("id") == bug_id:
+            bug_data = b
+            break
+
+    if bug_id not in classifications:
+        desc = (bug_data.get("description", "") + " " + bug_data.get("title", "")).lower()
+        sla = bug_data.get("sla_hours_remaining")
+        if any(w in desc for w in ["production down", "100%", "all transactions", "security breach", "p0"]):
+            sev = "critical"
+        elif any(w in desc for w in ["vulnerability", "exploit", "bypass"]) and sla and sla < 2:
+            sev = "critical"
+        elif any(w in desc for w in ["crash", "oom", "fails", "broken", "500", "down"]):
+            sev = "high"
+        elif any(w in desc for w in ["cosmetic", "tooltip", "alignment", "typo", "logo"]):
+            sev = "low"
+        else:
+            sev = "medium"
+        return {"action_type": "classify", "bug_id": bug_id, "severity": sev}
+
+    if bug_id not in assignments:
+        desc = (bug_data.get("description", "") + " " + bug_data.get("title", "")).lower()
+        if any(w in desc for w in ["security", "auth", "token", "session", "vulnerability", "exploit"]):
+            team = "security"
+        elif any(w in desc for w in ["css", "ui", "button", "layout", "dark mode", "contrast", "logo", "tooltip"]):
+            team = "frontend"
+        elif any(w in desc for w in ["mobile", "ios", "android", "app crash"]):
+            team = "mobile"
+        elif any(w in desc for w in ["database", "sql", "query", "index", "postgres"]):
+            team = "database"
+        elif any(w in desc for w in ["cluster", "node", "infra"]):
+            team = "infrastructure"
+        else:
+            team = "backend"
+        return {"action_type": "assign", "bug_id": bug_id, "assigned_team": team}
+
+    return {"action_type": "submit", "bug_id": bug_id}
+
+
+def get_llm_action(client: OpenAI, obs: Dict[str, Any], step_num: int) -> Dict[str, Any]:
+    """Call the LLM with retry, falling back to heuristic on failure."""
     user_prompt = _build_user_prompt(obs, step_num)
 
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        raw    = (completion.choices[0].message.content or "").strip()
-        parsed = _extract_json(raw)
-        if parsed and "action_type" in parsed and "bug_id" in parsed:
-            return parsed
-        print(f"[DEBUG] Could not parse LLM output: {raw[:200]}", file=sys.stderr)
-    except Exception as exc:
-        print(f"[DEBUG] LLM call failed: {exc}", file=sys.stderr)
+    for attempt in range(MAX_LLM_RETRIES + 1):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+            raw    = (completion.choices[0].message.content or "").strip()
+            parsed = _extract_json(raw)
+            if parsed and "action_type" in parsed and "bug_id" in parsed:
+                return parsed
+            print(f"[DEBUG] Attempt {attempt+1}: could not parse: {raw[:200]}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[DEBUG] Attempt {attempt+1} LLM error: {exc}", file=sys.stderr)
+            if attempt < MAX_LLM_RETRIES:
+                time.sleep(1)
 
-    # Deterministic heuristic fallback: classify → assign → submit
-    if unprocessed:
-        bug_id = unprocessed[0]
-        if bug_id not in obs.get("current_classifications", {}):
-            return {"action_type": "classify", "bug_id": bug_id, "severity": "medium"}
-        elif bug_id not in obs.get("current_assignments", {}):
-            return {"action_type": "assign", "bug_id": bug_id, "assigned_team": "backend"}
-        else:
-            return {"action_type": "submit", "bug_id": bug_id}
-
-    return {"action_type": "submit", "bug_id": unprocessed[0] if unprocessed else "unknown"}
+    print(f"[DEBUG] Using heuristic fallback", file=sys.stderr)
+    return _heuristic_action(obs)
 
 
 # ---------------------------------------------------------------------------
 # Single-task episode runner
-# [END] is guaranteed via finally — spec requirement
 # ---------------------------------------------------------------------------
 
 def run_task(
@@ -324,9 +383,8 @@ def run_task(
             if not unprocessed:
                 break
 
-            action_dict = get_llm_action(client, obs, step, unprocessed)
+            action_dict = get_llm_action(client, obs, step)
 
-            # Guard against malformed fallback
             if "action_type" not in action_dict:
                 action_dict["action_type"] = "submit"
             if "bug_id" not in action_dict and unprocessed:
@@ -342,7 +400,7 @@ def run_task(
                 obs         = step_result.get("observation", obs)
 
                 if done:
-                    info        = step_result.get("info", {})
+                    info = step_result.get("info", {})
                     final_score = info.get("final_score", 0.0)
                     if final_score == 0.0:
                         grade_result = env_client.grade()
@@ -360,7 +418,7 @@ def run_task(
             if done:
                 break
 
-        # Final grade if episode ended without /done flag (step budget exhausted)
+        # Final grade if not already obtained
         if final_score == 0.0:
             try:
                 grade_result = env_client.grade()
@@ -368,13 +426,15 @@ def run_task(
             except Exception:
                 pass
 
+        # Clamp score to [0, 1]
+        final_score = min(max(final_score, 0.0), 1.0)
         success = final_score >= SUCCESS_THRESHOLD
 
     except Exception as exc:
         print(f"[DEBUG] Episode error for task '{task_name}': {exc}", file=sys.stderr)
 
     finally:
-        # Spec: [END] must always be emitted, even on exception
+        # [END] ALWAYS emitted — even on exception (spec requirement)
         log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
 
     return success, steps_taken, final_score, rewards
@@ -388,7 +448,7 @@ def main() -> None:
     client     = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env_client = BugTriageClient(ENV_URL)
 
-    # Verify server reachability before starting
+    # Verify server reachability
     try:
         health = env_client.health()
         print(f"[INFO] Server healthy: {health}", file=sys.stderr)
@@ -408,11 +468,10 @@ def main() -> None:
                 file=sys.stderr,
             )
         except Exception as exc:
-            # run_task's finally block already emitted [END] — just record the score
             print(f"[ERROR] Task '{task_name}' outer crash: {exc}", file=sys.stderr)
             all_scores.append(0.0)
 
-        time.sleep(1)   # brief pause between tasks
+        time.sleep(1)
 
     mean_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
     print(f"\n[INFO] === Final Results ===", file=sys.stderr)

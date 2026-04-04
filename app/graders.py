@@ -1,7 +1,17 @@
 """
 BugTriage OpenEnv — Deterministic Graders
+==========================================
 Each grader scores a completed (or partial) BugTriageState against ground truth.
 All graders return float in [0.0, 1.0] and are fully reproducible.
+
+Step-level rewards:
+  Correct actions   → positive reward (+0.10 to +0.20)
+  Adjacent/partial  → small positive   (+0.03 to +0.06)
+  Wrong actions     → negative reward  (-0.05 to -0.15)
+  Invalid actions   → penalty          (-0.05 to -0.08)
+
+This reward structure gives the agent a strong, continuous learning signal
+at every step, enabling both policy-gradient and value-based RL methods.
 """
 from __future__ import annotations
 
@@ -23,7 +33,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
 def _severity_adjacent(predicted: str, truth: str) -> float:
     """
     Partial credit for severity close to ground truth.
-    Correct → 1.0;  adjacent (off by 1) → 0.5;  off by 2+ → 0.0
+    Correct → 1.0;  adjacent (off by 1) → 0.4;  off by 2 → 0.1;  off by 3 → 0.0
     """
     order = ["low", "medium", "high", "critical"]
     if predicted not in order or truth not in order:
@@ -32,7 +42,9 @@ def _severity_adjacent(predicted: str, truth: str) -> float:
     if dist == 0:
         return 1.0
     if dist == 1:
-        return 0.5
+        return 0.4
+    if dist == 2:
+        return 0.1
     return 0.0
 
 
@@ -63,7 +75,18 @@ def compute_step_reward(
 ) -> Tuple[float, str]:
     """
     Returns (reward, message) for a single step action.
-    Reward is in [-0.15, +0.20] so the agent gets continuous signal.
+
+    Reward magnitudes:
+      Correct classify    : +0.15   (adjacent: +0.06)
+      Correct assign      : +0.12
+      Correct duplicate   : +0.18
+      Correct escalate    : +0.12
+      Correct info request: +0.10
+      Complete submit     : +0.08   (partial: +0.02)
+      Wrong action        : -0.08 to -0.15
+      Invalid/wasteful    : -0.05
+
+    These magnitudes ensure clear gradient signal for RL training.
     """
     gt = scenario.ground_truth.get(bug_id)
     if gt is None:
@@ -76,63 +99,66 @@ def compute_step_reward(
         predicted = action_payload.get("severity", "")
         score = _severity_adjacent(predicted, gt.severity)
         if score == 1.0:
-            reward = 0.10
+            reward = 0.15
             msg_parts.append(f"✓ Correct severity '{predicted}'")
-        elif score == 0.5:
-            reward = 0.04
+        elif score >= 0.4:
+            reward = 0.06
             msg_parts.append(f"~ Adjacent severity '{predicted}' (correct: '{gt.severity}')")
+        elif score >= 0.1:
+            reward = -0.03
+            msg_parts.append(f"~ Far severity '{predicted}' (correct: '{gt.severity}')")
         else:
-            reward = -0.05
+            reward = -0.10
             msg_parts.append(f"✗ Wrong severity '{predicted}' (correct: '{gt.severity}')")
 
     elif action_type == "assign":
         predicted_team = action_payload.get("assigned_team", "")
         if predicted_team == gt.team:
-            reward = 0.08
+            reward = 0.12
             msg_parts.append(f"✓ Correct team '{predicted_team}'")
         else:
-            reward = -0.05
+            reward = -0.08
             msg_parts.append(f"✗ Wrong team '{predicted_team}' (correct: '{gt.team}')")
 
     elif action_type == "request_info":
         if gt.needs_info:
-            reward = 0.06
-            msg_parts.append("✓ Info request appropriate")
+            reward = 0.10
+            msg_parts.append("✓ Info request appropriate — critical details are missing")
         else:
-            reward = -0.04
-            msg_parts.append("✗ Unnecessary info request")
+            reward = -0.05
+            msg_parts.append("✗ Unnecessary info request — all details already present")
 
     elif action_type == "mark_duplicate":
         claimed_original = action_payload.get("duplicate_of", "")
         if gt.is_duplicate_of and gt.is_duplicate_of == claimed_original:
-            reward = 0.12
+            reward = 0.18
             msg_parts.append(f"✓ Correct duplicate: '{bug_id}' → '{claimed_original}'")
         elif gt.is_duplicate_of and gt.is_duplicate_of != claimed_original:
-            reward = -0.05
-            msg_parts.append("✗ Wrong duplicate mapping")
-        else:
             reward = -0.08
+            msg_parts.append(f"✗ Wrong duplicate target (correct: '{gt.is_duplicate_of}')")
+        else:
+            reward = -0.12
             msg_parts.append(f"✗ False duplicate claim ('{bug_id}' is not a duplicate)")
 
     elif action_type == "escalate":
         if gt.should_escalate:
-            reward = 0.08
+            reward = 0.12
             msg_parts.append(f"✓ Correct escalation for '{bug_id}'")
         else:
-            reward = -0.03
+            reward = -0.05
             msg_parts.append(f"✗ Unnecessary escalation for '{bug_id}'")
 
     elif action_type == "submit":
         classified = bug_id in state.classifications
         assigned = bug_id in state.assignments
         if classified and assigned:
-            reward = 0.05
+            reward = 0.08
             msg_parts.append(f"✓ Bug '{bug_id}' submitted with classify + assign")
         elif classified or assigned:
-            reward = 0.01
+            reward = 0.02
             msg_parts.append(f"~ Partial: submitted '{bug_id}' but missing classify or assign")
         else:
-            reward = -0.05
+            reward = -0.08
             msg_parts.append(f"✗ Submitted '{bug_id}' without classify or assign")
 
     return _clamp(reward, -0.15, 0.20), "; ".join(msg_parts)

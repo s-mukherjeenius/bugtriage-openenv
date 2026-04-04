@@ -1,6 +1,7 @@
 """
-BugTriage OpenEnv — FastAPI Server
-Uses openenv-core's create_app to create the standard OpenEnv HTTP server.
+BugTriage OpenEnv — FastAPI Server (openenv-core integration)
+Uses openenv-core's create_app for the standard OpenEnv WebSocket server.
+Falls back to our custom HTTP server if openenv-core is not installed.
 """
 from __future__ import annotations
 
@@ -14,8 +15,6 @@ from fastapi.responses import FileResponse
 try:
     from openenv.core.env_server import create_app
 except ImportError:
-    # Fallback: use our existing FastAPI server directly
-    from app.server import app as _fallback_app  # type: ignore[assignment]
     create_app = None
 
 try:
@@ -53,26 +52,82 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Extra endpoints on top of the standard ones
+# Extra HTTP endpoints (on top of the standard WebSocket interface)
+# These ensure the HF Space responds to HTTP health/reset pings
+# and provide a web UI for manual testing.
 # ---------------------------------------------------------------------------
 
 _UI_FILE = Path(__file__).parent.parent / "app" / "ui.html"
 
-
-@app.get("/ui", include_in_schema=False)
-def interactive_ui():
-    """Serve the interactive web UI for manual environment testing."""
-    if not _UI_FILE.exists():
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="UI file not found")
-    return FileResponse(str(_UI_FILE), media_type="text/html")
+# Shared HTTP environment instance (for /reset, /step, /grade via HTTP)
+_http_env: "BugTriageEnvironment | None" = None
 
 
-@app.get("/", include_in_schema=False)
-def root():
-    """Redirect root to the interactive UI."""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/ui")
+def _get_http_env() -> BugTriageEnvironment:
+    global _http_env
+    if _http_env is None:
+        _http_env = BugTriageEnvironment(task_name=TASK_NAME)
+    return _http_env
+
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    """Health check — required by HF Space ping and pre-submission validator."""
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "active_task": TASK_NAME,
+        "step_number": 0,
+    }
+
+
+@app.post("/reset")
+def http_reset(body: Dict[str, Any] = {}) -> Dict[str, Any]:
+    """
+    HTTP reset endpoint — required by pre-submission validator.
+    Validator sends: POST /reset with {} body, expects 200.
+    """
+    global _http_env
+    task = body.get("task", TASK_NAME) if body else TASK_NAME
+    _http_env = BugTriageEnvironment(task_name=task)
+    obs = _http_env.reset()
+    return {
+        "observation": obs.model_dump() if hasattr(obs, "model_dump") else obs.dict(),
+        "done": False,
+        "info": {"task": task, "version": "1.0.0"},
+    }
+
+
+@app.post("/step")
+def http_step(action: Dict[str, Any]) -> Dict[str, Any]:
+    """HTTP step endpoint."""
+    env = _get_http_env()
+    from models import BugTriageAction
+    act = BugTriageAction(**action)
+    obs = env.step(act)
+    return {
+        "observation": obs.model_dump() if hasattr(obs, "model_dump") else obs.dict(),
+        "reward": obs.reward if hasattr(obs, "reward") else 0.0,
+        "done": obs.done if hasattr(obs, "done") else False,
+        "info": {},
+    }
+
+
+@app.get("/state")
+def http_state() -> Dict[str, Any]:
+    """HTTP state endpoint."""
+    env = _get_http_env()
+    st = env.state
+    return st.model_dump() if hasattr(st, "model_dump") else st.dict()
+
+
+@app.get("/grade")
+@app.post("/grade")
+def http_grade() -> Dict[str, Any]:
+    """Grade the current episode and return score + components."""
+    env = _get_http_env()
+    return env.grade()
+
 
 @app.get("/tasks")
 def list_tasks() -> List[Dict[str, Any]]:
@@ -96,16 +151,20 @@ def list_tasks() -> List[Dict[str, Any]]:
     ]
 
 
-@app.get("/grade")
-@app.post("/grade")
-def grade_current() -> Dict[str, Any]:
-    """
-    Grade the current episode state and return score [0,1] + components.
-    Non-standard endpoint kept for hackathon grader compatibility.
-    """
-    # The environment instance lives in the openenv framework's session manager.
-    # For single-session usage via HTTP (not WebSocket), create a proxy grade call.
-    return {"message": "Use /ws WebSocket session for grading, or POST /reset + /step + /grade"}
+@app.get("/ui", include_in_schema=False)
+def interactive_ui():
+    """Serve the interactive web UI for manual environment testing."""
+    if not _UI_FILE.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="UI file not found")
+    return FileResponse(str(_UI_FILE), media_type="text/html")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirect root to the interactive UI."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui")
 
 
 # ---------------------------------------------------------------------------
@@ -113,9 +172,8 @@ def grade_current() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Start the BugTriage OpenEnv server. Called by openenv and the project script."""
+    """Start the BugTriage OpenEnv server."""
     import uvicorn
-    import os
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "7860"))

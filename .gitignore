@@ -3,49 +3,39 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+*.egg-info/
+*.egg
 build/
 dist/
-*.egg-info/
 .eggs/
 
 # Virtual environments
-.env
-.venv
-env/
+.venv/
 venv/
-ENV/
+env/
+
+# Environment variables (contains secrets)
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# Logs
-*.log
+*~
 
 # OS
+*.log
 .DS_Store
 Thumbs.db
 
 # Docker
-.dockerignore
+*.tar
 
-# Secrets — never commit
-.env
-*.pem
-*.key
-
-# Temp / patch files
-*.bak
-*.tmp
-
-# Archived / deleted files
-_archive/
+# Jupyter
+.ipynb_checkpoints/

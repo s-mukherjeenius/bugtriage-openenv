@@ -1,14 +1,8 @@
-# BugTriage OpenEnv — Runtime dependencies
-# For local development: pip install -r requirements.txt
-# For locked reproducible installs: uv sync --frozen (uses uv.lock)
-# Dev dependencies (pytest etc.) are in pyproject.toml [project.optional-dependencies]
-
+# BugTriage OpenEnv — Runtime Dependencies
 openenv-core>=0.2.1
 fastapi>=0.115.5
 uvicorn[standard]>=0.32.1
 pydantic>=2.11.0
 requests>=2.32.3
 openai>=1.57.4
-python-dotenv>=1.0.1
 httpx>=0.28.1
-anyio>=4.7.0

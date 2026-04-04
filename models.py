@@ -127,11 +127,14 @@ class BugTriageReward(BaseModel):
     Typed Reward model — satisfies OpenEnv spec requirement for
     a named Reward Pydantic model alongside Action and Observation.
 
-    value       — scalar reward for this step, in [-0.15, +0.20]
+    Step rewards range from -0.15 to +0.20 for continuous signal.
+    Episode-level grader scores are in [0.0, 1.0].
+
+    value       — scalar reward for this step
     components  — named breakdown (e.g. {'severity': 0.10, 'team': 0.08})
     message     — human-readable explanation of what happened
     """
-    value:      float            = Field(..., description="Step reward")
+    value:      float            = Field(..., ge=-1.0, le=1.0, description="Step reward or episode score")
     components: Dict[str, float] = Field(default_factory=dict)
     message:    str              = Field("", description="Explanation")
 

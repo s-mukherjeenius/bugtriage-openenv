@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bugtriage-openenv"
 version = "1.0.0"
-description = "OpenEnv-compliant Bug Report Triage & Priority Queue Management environment"
+description = "OpenEnv environment for software bug triage — classify, route, escalate, and resolve"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "openenv-core>=0.2.1",
@@ -16,26 +16,14 @@ dependencies = [
     "pydantic>=2.11.0",
     "requests>=2.32.3",
     "openai>=1.57.4",
-    "python-dotenv>=1.0.1",
     "httpx>=0.28.1",
-    "anyio>=4.7.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.3.4",
-    "pytest-asyncio>=0.24.0",
-    "httpx>=0.28.1",
-]
+dev = ["pytest>=8.3.4", "httpx>=0.28.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-asyncio_mode = "auto"
-log_cli = true
-log_cli_level = "INFO"
 
 [project.scripts]
 server = "server.app:main"

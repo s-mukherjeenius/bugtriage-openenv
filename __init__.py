@@ -1,12 +1,12 @@
 """
 BugTriage OpenEnv — package root.
-Exports the client, action, and observation classes for use in training code.
-
-Usage:
-    from bugtriage_openenv import BugTriageEnv, BugTriageAction, BugTriageObservation
+Exports the typed client, action, and observation classes.
 """
-from client import BugTriageEnv
-from models import BugTriageAction, BugTriageObservation, BugTriageReward, BugTriageState
+try:
+    from client import BugTriageEnv
+    from models import BugTriageAction, BugTriageObservation, BugTriageReward, BugTriageState
+except ImportError:
+    pass  # Imports fail when used outside the package root (e.g. in Docker)
 
 __all__ = [
     "BugTriageEnv",

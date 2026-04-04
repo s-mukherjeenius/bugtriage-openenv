@@ -162,11 +162,22 @@ class BugTriageObservation(BaseModel):
 # ---------------------------------------------------------------------------
 
 class BugTriageReward(BaseModel):
-    """Structured reward with component breakdown for interpretability."""
+    """
+    Structured reward with component breakdown for interpretability.
 
-    value: float = Field(..., ge=0.0, le=1.0, description="Scalar reward for this step [0, 1]")
+    Step rewards range from -0.15 (wrong action) to +0.20 (correct action)
+    to give the agent continuous learning signal at every step.
+    Episode-level grader scores are in [0.0, 1.0].
+    """
+
+    value: float = Field(
+        ...,
+        ge=-1.0,
+        le=1.0,
+        description="Scalar reward for this step [-0.15, +0.20] or episode score [0, 1]",
+    )
     components: Dict[str, float] = Field(
-        default_factory=dict, description="Named sub-scores summing to value"
+        default_factory=dict, description="Named sub-scores for interpretability"
     )
     message: str = Field("", description="Human-readable explanation of reward")
 
