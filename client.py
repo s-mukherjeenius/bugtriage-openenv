@@ -13,6 +13,7 @@ except ImportError:
     # Local dev fallback — minimal stub
     class EnvClient:  # type: ignore[no-redef]
         def __init__(self, base_url: str = "http://localhost:7860", **kw): ...
+        def __class_getitem__(cls, item): return cls
     class StepResult:  # type: ignore[no-redef]
         def __init__(self, **kw): ...
 
