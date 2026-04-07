@@ -126,7 +126,7 @@ def get_state() -> BugTriageState:
 
 
 @app.post("/grade")
-def grade_episode() -> Dict[str, Any]:
+def handle_grade() -> Dict[str, Any]:
     env = _get_env()
     try:
         return env.grade()

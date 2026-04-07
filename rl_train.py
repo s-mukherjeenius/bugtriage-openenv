@@ -51,6 +51,7 @@ EPS_START      = 0.90
 EPS_END        = 0.03
 EPS_DECAY_FRAC = 0.5
 PRINT_EVERY    = 20
+DYNAMIC_SEEDS  = os.getenv("RL_DYNAMIC", "true").lower() == "true"  # Use varied scenarios each episode
 
 SEVERITIES = ["critical", "high", "medium", "low"]
 TEAMS      = ["backend", "frontend", "mobile", "infrastructure",
@@ -188,9 +189,14 @@ def run_episode(
     task: str,
     epsilon: float,
     train: bool = True,
+    ep_idx: int = 0,
 ) -> EpisodeResult:
     result = EpisodeResult()
-    reset_resp = session.post(f"{ENV_URL}/reset", json={"task": task}, timeout=30).json()
+    seed = (ep_idx * 7919 + hash(task)) % 99999 + 1 if DYNAMIC_SEEDS else None  # varied per episode
+    reset_body = {"task": task}
+    if seed is not None:
+        reset_body["seed"] = seed
+    reset_resp = session.post(f"{ENV_URL}/reset", json=reset_body, timeout=30).json()
     obs = reset_resp.get("observation", {})
 
     max_steps_map = {"single-triage": 5, "batch-triage": 32, "sla-crisis": 50}
@@ -326,6 +332,9 @@ def epsilon_schedule(ep: int, total: int) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
+    global TASK, DYNAMIC_SEEDS, N_EPISODES
+
+    # ── Server health check ──────────────────────────────────
     try:
         h = requests.get(f"{ENV_URL}/health", timeout=10).json()
         print(f"\n✅ Server: {h['status']} v{h['version']}")
@@ -333,6 +342,44 @@ def main():
         print(f"\n❌ Cannot reach server at {ENV_URL}: {e}")
         print(f"   Start: cd bugtriage-openenv && uvicorn app.server:app --port 7860")
         sys.exit(1)
+
+    # ── Interactive task selection ────────────────────────────
+    if not os.getenv("RL_TASK"):
+        print("\n  Select a task to train on:")
+        print("  [1] single-triage  (Easy  — 1 bug,  5 steps)")
+        print("  [2] batch-triage   (Medium — 8 bugs, 32 steps)")
+        print("  [3] sla-crisis     (Hard  — 15 bugs, 50 steps)")
+        try:
+            choice = input("\n  Enter 1, 2, or 3 (default=2): ").strip()
+            if choice == "1":
+                TASK = "single-triage"
+            elif choice == "3":
+                TASK = "sla-crisis"
+            else:
+                TASK = "batch-triage"
+        except (EOFError, KeyboardInterrupt):
+            pass
+        print(f"  → Training on: {TASK}")
+
+        # Ask about dynamic scenarios
+        try:
+            dyn = input("  Use dynamic scenarios? (y/N): ").strip().lower()
+            if dyn in ("y", "yes"):
+                DYNAMIC_SEEDS = True
+                print("  → Dynamic mode: ON (different bugs each episode)")
+            else:
+                DYNAMIC_SEEDS = False
+                print("  → Dynamic mode: OFF (same bugs each episode)")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+        # Ask about episodes
+        try:
+            eps_input = input(f"  Number of episodes? (default={N_EPISODES}): ").strip()
+            if eps_input.isdigit() and int(eps_input) > 0:
+                N_EPISODES = int(eps_input)
+        except (EOFError, KeyboardInterrupt):
+            pass
 
     nets = {
         "classify":  PolicyNet(BUG_DIM, 32, len(SEVERITIES), LR, "Classify"),
@@ -358,7 +405,7 @@ def main():
     # Before training
     print(f"\n{'─'*70}")
     print(f"BEFORE training (random weights, ε=0):")
-    before = run_episode(session, nets, TASK, 0.0, train=False)
+    before = run_episode(session, nets, TASK, 0.0, train=False, ep_idx=0)
     print(f"  Score: {before.score:.3f}  |  Components: {before.components}")
 
     # Training loop
@@ -375,7 +422,7 @@ def main():
 
     for ep in range(1, N_EPISODES + 1):
         eps = epsilon_schedule(ep, N_EPISODES)
-        result = run_episode(session, nets, TASK, eps, train=True)
+        result = run_episode(session, nets, TASK, eps, train=True, ep_idx=ep)
         scores.append(result.score)
 
         if ep % PRINT_EVERY == 0 or ep <= 3:
@@ -401,7 +448,7 @@ def main():
     # After training
     print(f"\n{'─'*70}")
     print(f"AFTER training (ε=0, pure exploitation):")
-    after = run_episode(session, nets, TASK, 0.0, train=False)
+    after = run_episode(session, nets, TASK, 0.0, train=False, ep_idx=0)
     print(f"  Score: {after.score:.3f}")
     print(f"  Components: {after.components}")
 

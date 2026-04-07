@@ -78,6 +78,8 @@ class BugTriageEnv:
         if seed is not None:
             from app.generator import generate_scenario
             self._scenario = generate_scenario(self.task_name, seed)
+        else:
+            self._scenario = SCENARIOS[self.task_name]
 
         self._state = BugTriageState(
             task_name=self.task_name,

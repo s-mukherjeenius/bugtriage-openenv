@@ -34,7 +34,7 @@ export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
 python inference.py
 
-# Run RL training demo (separate terminal)
+# Run RL training demo (separate terminal — interactive menu)
 python rl_train.py
 ```
 
@@ -47,6 +47,74 @@ Software bug triage is a critical daily task at every technology company. When a
 This environment models that exact workflow. An AI agent receives raw bug reports (with titles, descriptions, SLA deadlines, customer tiers, and metadata) and must take a sequence of triage actions. The environment provides rich, continuous reward signals at every step, making it suitable for both LLM-based inference and RL post-training.
 
 **Who would use this:** Companies building AI copilots for engineering teams (incident response, support ticket routing, DevOps automation), researchers training LLM agents on multi-step decision tasks with structured action spaces, and teams evaluating LLM reasoning over noisy real-world text.
+
+---
+
+## Dynamic Scenario Generation
+
+BugTriage supports **seed-based dynamic scenario generation** for unlimited training variety. Instead of training on the same 3 static scenarios, agents can face fresh, structurally valid bug sets on every episode.
+
+### How it works
+
+Pass a `seed` parameter to `/reset` to generate a new scenario:
+
+```bash
+# Static scenario (default — same bugs every time, used for evaluation)
+curl -X POST -d '{"task": "batch-triage"}' http://localhost:7860/reset
+
+# Dynamic scenario (seed=42 — fresh bugs, deterministic for that seed)
+curl -X POST -d '{"task": "batch-triage", "seed": 42}' http://localhost:7860/reset
+
+# Different seed = different bugs
+curl -X POST -d '{"task": "batch-triage", "seed": 999}' http://localhost:7860/reset
+```
+
+Same seed + same task always produces identical output (fully deterministic via `random.Random(seed)`).
+
+### What gets generated
+
+The generator (`app/generator.py`) draws from a pool of **30+ realistic bug templates** across 6 engineering teams (backend, frontend, security, database, infrastructure, mobile) and assembles structurally valid scenarios:
+
+| Task | Bugs | Structure |
+|------|------|-----------|
+| Easy | 1 | 1 critical bug, enterprise tier, SLA-critical, needs escalation |
+| Medium | 8 | 1 security escalation + 1 info-incomplete + 1 duplicate pair + 4 varied |
+| Hard | 15 | 3 duplicate pairs + 2 info-incomplete + 5 SLA-critical + varied filler |
+
+Duplicate pairs use semantically similar but differently worded variant descriptions — the agent must recognize the same root cause described by different reporters.
+
+### Using in the Web UI
+
+The interactive UI at `http://localhost:7860/ui` has a **Static / Dynamic** toggle in the left panel. Select Dynamic, enter a seed (or click 🎲 for random), and click Start to play with generated scenarios.
+
+### Using in RL training
+
+`rl_train.py` uses dynamic scenarios by default, generating a unique seed per episode so the agent trains on varied bug distributions:
+
+```bash
+python rl_train.py
+# Interactive menu asks:
+#   [1] single-triage  [2] batch-triage  [3] sla-crisis
+#   Use dynamic scenarios? (y/N)
+#   Number of episodes?
+```
+
+### Python API
+
+```python
+from app.generator import generate_scenario
+
+# Generate a medium scenario with seed 42
+scenario = generate_scenario("batch-triage", seed=42)
+print(len(scenario.bug_reports))  # 8
+print(scenario.ground_truth)       # {bug_id: BugGroundTruth, ...}
+
+# Use via the environment
+from app.env import BugTriageEnv
+env = BugTriageEnv("batch-triage")
+result = env.reset(seed=42)  # dynamic bugs
+result = env.reset()          # static bugs (default)
+```
 
 ---
 
@@ -138,14 +206,6 @@ Baseline scores from `inference.py` using `Qwen/Qwen2.5-72B-Instruct` via Huggin
 | batch-triage    | Medium    | ~0.55  | 0.65      | Near   |
 | sla-crisis      | Hard      | ~0.35  | 0.50      | Challenging |
 
-**Heuristic fallback scores** (when LLM is unavailable, deterministic keyword-based policy):
-
-| Task            | Score  | Notes                                         |
-|-----------------|--------|-----------------------------------------------|
-| single-triage   | ~0.70  | Gets severity + team right via keyword matching |
-| batch-triage    | ~0.30  | Classify + assign only, no duplicate/escalation |
-| sla-crisis      | ~0.20  | Limited by step budget and no advanced actions  |
-
 The hard task (sla-crisis) is designed to genuinely challenge frontier models. Perfect score requires correctly handling 3 duplicate pairs across 15 bugs, prioritizing SLA-critical escalations, detecting incomplete reports, and managing a tight 50-step budget.
 
 ---
@@ -154,7 +214,7 @@ The hard task (sla-crisis) is designed to genuinely challenge frontier models. P
 
 | Method | Path     | Description                         |
 |--------|----------|-------------------------------------|
-| POST   | /reset   | Initialize episode with task name   |
+| POST   | /reset   | Initialize episode (`{task, seed?}`) |
 | POST   | /step    | Execute one triage action           |
 | GET    | /state   | Get full internal state             |
 | POST   | /grade   | Get episode score + components      |
@@ -165,21 +225,26 @@ The hard task (sla-crisis) is designed to genuinely challenge frontier models. P
 
 ## RL Training Demo
 
-The included `rl_train.py` demonstrates that the environment produces learnable reward signals by training lightweight neural-network policies via REINFORCE with baseline, purely from the environment's step rewards:
+The included `rl_train.py` demonstrates that the environment produces learnable reward signals. It features an interactive startup menu:
 
 ```bash
 # Start server
 uvicorn app.server:app --port 7860
 
-# Train (default: batch-triage, 800 episodes)
+# Launch training with interactive menu
 python rl_train.py
+#   Select a task to train on:
+#   [1] single-triage  (Easy  — 1 bug,  5 steps)
+#   [2] batch-triage   (Medium — 8 bugs, 32 steps)
+#   [3] sla-crisis     (Hard  — 15 bugs, 50 steps)
+#   Use dynamic scenarios? (y/N): y
+#   Number of episodes? (default=800): 1000
 
-# Train on other tasks
-RL_TASK=single-triage RL_EPISODES=600 python rl_train.py
-RL_TASK=sla-crisis RL_EPISODES=1200 python rl_train.py
+# Or use environment variables for non-interactive mode
+RL_TASK=sla-crisis RL_DYNAMIC=true RL_EPISODES=1200 python rl_train.py
 ```
 
-Architecture: 5 policy heads (classify, assign, info, escalate, duplicate) trained independently on their own reward signals. Uses Jaccard text similarity for duplicate target selection — no hardcoded answers.
+Architecture: 5 policy heads (classify, assign, info, escalate, duplicate) trained independently via REINFORCE with baseline. Uses Jaccard text similarity for duplicate target selection — no hardcoded answers. Dynamic mode generates a unique scenario per episode for maximum training diversity.
 
 ---
 
@@ -188,27 +253,28 @@ Architecture: 5 policy heads (classify, assign, info, escalate, duplicate) train
 ```
 bugtriage-openenv/
 ├── app/
-│   ├── env.py              # Core environment: reset(), step(), state()
-│   ├── graders.py          # Deterministic step + episode graders
+│   ├── env.py              # Core environment: reset(seed=None), step(), grade()
+│   ├── generator.py        # Dynamic scenario generator (30+ bug templates)
+│   ├── graders.py          # Generic step + episode graders (no hardcoded IDs)
 │   ├── models.py           # Pydantic: Action, Observation, Reward, State
-│   ├── scenarios.py        # Bug reports + ground truth (3 tasks)
-│   ├── server.py           # FastAPI HTTP server
-│   └── ui.html             # Interactive web UI
+│   ├── scenarios.py        # Static bug reports + ground truth (3 tasks)
+│   ├── server.py           # FastAPI HTTP server (supports seed in /reset)
+│   └── ui.html             # Interactive web UI (Static/Dynamic toggle)
 ├── server/
-│   ├── app.py              # OpenEnv-wrapped server (openenv create_app)
-│   └── bugtriage_environment.py  # openenv Environment interface
+│   ├── app.py              # OpenEnv-wrapped server (seed passthrough)
+│   └── bugtriage_environment.py  # openenv Environment (seed support)
 ├── models.py               # Root models (openenv-core typed)
 ├── client.py               # openenv EnvClient for training code
 ├── inference.py            # LLM baseline inference script
-├── rl_train.py             # RL training demo (REINFORCE)
+├── rl_train.py             # RL training (interactive menu + dynamic seeds)
 ├── openenv.yaml            # OpenEnv spec manifest
 ├── Dockerfile              # Multi-stage Docker build
 ├── requirements.txt        # Runtime dependencies
 ├── pyproject.toml          # Project metadata
-└── tests/                  # Comprehensive test suite
+└── tests/                  # Comprehensive test suite (28 seed tests)
     ├── test_env.py         # Environment logic tests
-    ├── test_graders.py     # Grader correctness tests
-    └── test_api.py         # HTTP API compliance tests
+    ├── test_graders.py     # Grader + generator tests (20 generator tests)
+    └── test_api.py         # HTTP API + dynamic scenario tests
 ```
 
 ---
@@ -221,6 +287,9 @@ bugtriage-openenv/
 | `MODEL_NAME`   | Yes*     | `Qwen/Qwen2.5-72B-Instruct`         | Model identifier               |
 | `HF_TOKEN`     | Yes*     | —                                    | HuggingFace / API key          |
 | `ENV_URL`      | No       | `http://localhost:7860`              | BugTriage server URL           |
+| `RL_TASK`      | No       | `batch-triage`                       | Task for RL training           |
+| `RL_DYNAMIC`   | No       | `true`                               | Use dynamic scenarios in RL    |
+| `RL_EPISODES`  | No       | `800`                                | Number of training episodes    |
 
 *Required for inference.py
 
@@ -249,6 +318,7 @@ curl -X POST -H "Content-Type: application/json" -d '{}' http://localhost:7860/r
 ```bash
 pip install pytest
 pytest tests/ -v
+# Runs 114+ tests including 28 dynamic scenario generation tests
 ```
 
 ---

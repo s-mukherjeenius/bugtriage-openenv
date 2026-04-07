@@ -197,6 +197,22 @@
         </button>
       </div>
 
+      <!-- Scenario mode toggle -->
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:12px">
+        <label style="margin-bottom:6px;display:block">Scenario Mode</label>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button class="qa-btn active" id="mode-static" onclick="setScenarioMode('static')" style="flex:1">📋 Static</button>
+          <button class="qa-btn" id="mode-dynamic" onclick="setScenarioMode('dynamic')" style="flex:1">🎲 Dynamic</button>
+        </div>
+        <div id="seed-controls" style="display:none">
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="number" id="seed-input" placeholder="Seed (e.g. 42)" min="1" max="99999" style="flex:1"/>
+            <button onclick="document.getElementById('seed-input').value=Math.floor(Math.random()*99999)+1" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:7px 10px;font-size:12px;cursor:pointer" title="Random seed">🎲</button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">Same seed = same bugs. Different seed = fresh scenario.</div>
+        </div>
+      </div>
+
       <button class="start-btn" id="start-btn" onclick="startEpisode()">▶ Start Episode</button>
 
       <div class="divider"></div>
@@ -376,6 +392,7 @@
 const API = '';   // same origin — FastAPI serves this page
 let state = {
   task: 'single-triage',
+  scenarioMode: 'static',
   obs: null,
   history: [],
   done: false,
@@ -405,6 +422,16 @@ function selectTask(btn) {
   state.task = btn.dataset.task;
 }
 
+// ── Scenario mode ──────────────────────────────────────────
+function setScenarioMode(mode) {
+  state.scenarioMode = mode;
+  document.getElementById('mode-static').classList.toggle('active', mode === 'static');
+  document.getElementById('mode-dynamic').classList.toggle('active', mode === 'dynamic');
+  document.getElementById('seed-controls').style.display = mode === 'dynamic' ? 'block' : 'none';
+  const btn = document.getElementById('start-btn');
+  if (!state.obs) btn.textContent = mode === 'dynamic' ? '🎲 Start Dynamic Episode' : '▶ Start Episode';
+}
+
 // ── Episode start ─────────────────────────────────────────
 async function startEpisode() {
   const btn = document.getElementById('start-btn');
@@ -414,7 +441,7 @@ async function startEpisode() {
     const r = await fetch(`${API}/reset`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({task: state.task})
+      body: JSON.stringify({task: state.task, seed: state.scenarioMode === 'dynamic' ? (parseInt(document.getElementById('seed-input').value) || Math.floor(Math.random()*99999)+1) : null})
     });
     const data = await r.json();
     state.obs = data.observation;
@@ -434,7 +461,7 @@ async function startEpisode() {
     alert('Failed to connect to BugTriage server. Is it running on port 7860?\n\n' + e);
   }
   btn.disabled = false;
-  btn.textContent = '↺ Restart Episode';
+  btn.textContent = state.scenarioMode === 'dynamic' ? '🎲 New Dynamic Episode' : '↺ Restart Episode';
 }
 
 // ── Action type ───────────────────────────────────────────

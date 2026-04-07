@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi.responses import FileResponse
 
@@ -24,20 +24,12 @@ except ImportError:
     from models import BugTriageAction, BugTriageObservation           # type: ignore[no-redef]
     from server.bugtriage_environment import BugTriageEnvironment      # type: ignore[no-redef]
 
-# ---------------------------------------------------------------------------
-# Task selector — read from env var (default: single-triage)
-# ---------------------------------------------------------------------------
 TASK_NAME = os.getenv("BUGTRIAGE_TASK", "single-triage")
 
 
 def create_bugtriage_environment() -> BugTriageEnvironment:
-    """Factory: each WebSocket session gets its own isolated environment instance."""
     return BugTriageEnvironment(task_name=TASK_NAME)
 
-
-# ---------------------------------------------------------------------------
-# Create the OpenEnv-standard FastAPI application
-# ---------------------------------------------------------------------------
 
 if create_app is not None:
     app = create_app(
@@ -47,19 +39,9 @@ if create_app is not None:
         env_name="bugtriage",
     )
 else:
-    # openenv-core not installed — fall back to our custom FastAPI server
     from app.server import app  # type: ignore[assignment]  # noqa: F811
 
-
-# ---------------------------------------------------------------------------
-# Extra HTTP endpoints (on top of the standard WebSocket interface)
-# These ensure the HF Space responds to HTTP health/reset pings
-# and provide a web UI for manual testing.
-# ---------------------------------------------------------------------------
-
 _UI_FILE = Path(__file__).parent.parent / "app" / "ui.html"
-
-# Shared HTTP environment instance (for /reset, /step, /grade via HTTP)
 _http_env: "BugTriageEnvironment | None" = None
 
 
@@ -72,35 +54,30 @@ def _get_http_env() -> BugTriageEnvironment:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    """Health check — required by HF Space ping and pre-submission validator."""
-    return {
-        "status": "healthy",
-        "version": "1.0.0",
-        "active_task": TASK_NAME,
-        "step_number": 0,
-    }
+    return {"status": "healthy", "version": "1.0.0", "active_task": TASK_NAME, "step_number": 0}
 
 
 @app.post("/reset")
 def http_reset(body: Dict[str, Any] = {}) -> Dict[str, Any]:
     """
-    HTTP reset endpoint — required by pre-submission validator.
+    HTTP reset endpoint. Supports dynamic scenarios via seed parameter.
     Validator sends: POST /reset with {} body, expects 200.
+    Training/UI sends: POST /reset with {"task": "...", "seed": 42}
     """
     global _http_env
     task = body.get("task", TASK_NAME) if body else TASK_NAME
+    seed: Optional[int] = body.get("seed") if body else None
     _http_env = BugTriageEnvironment(task_name=task)
-    obs = _http_env.reset()
+    obs = _http_env.reset(seed=seed)
     return {
         "observation": obs.model_dump() if hasattr(obs, "model_dump") else obs.dict(),
         "done": False,
-        "info": {"task": task, "version": "1.0.0"},
+        "info": {"task": task, "version": "1.0.0", "generated": seed is not None, "seed": seed},
     }
 
 
 @app.post("/step")
 def http_step(action: Dict[str, Any]) -> Dict[str, Any]:
-    """HTTP step endpoint."""
     env = _get_http_env()
     from models import BugTriageAction
     act = BugTriageAction(**action)
@@ -115,7 +92,6 @@ def http_step(action: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/state")
 def http_state() -> Dict[str, Any]:
-    """HTTP state endpoint."""
     env = _get_http_env()
     st = env.state
     return st.model_dump() if hasattr(st, "model_dump") else st.dict()
@@ -124,36 +100,25 @@ def http_state() -> Dict[str, Any]:
 @app.get("/grade")
 @app.post("/grade")
 def http_grade() -> Dict[str, Any]:
-    """Grade the current episode and return score + components."""
     env = _get_http_env()
     return env.grade()
 
 
 @app.get("/tasks")
 def list_tasks() -> List[Dict[str, Any]]:
-    """List all available tasks with metadata."""
     try:
         from app.scenarios import SCENARIOS
     except ImportError:
         from server.bugtriage_environment import SCENARIOS  # type: ignore[no-redef]
-
     return [
-        {
-            "id":               tid,
-            "name":             s.name,
-            "description":      s.description,
-            "difficulty":       s.difficulty,
-            "max_steps":        s.max_steps,
-            "num_bugs":         len(s.bug_reports),
-            "reward_threshold": s.reward_threshold,
-        }
+        {"id": tid, "name": s.name, "description": s.description, "difficulty": s.difficulty,
+         "max_steps": s.max_steps, "num_bugs": len(s.bug_reports), "reward_threshold": s.reward_threshold}
         for tid, s in SCENARIOS.items()
     ]
 
 
 @app.get("/ui", include_in_schema=False)
 def interactive_ui():
-    """Serve the interactive web UI for manual environment testing."""
     if not _UI_FILE.exists():
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="UI file not found")
@@ -162,28 +127,15 @@ def interactive_ui():
 
 @app.get("/", include_in_schema=False)
 def root():
-    """Redirect root to the interactive UI."""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/ui")
 
 
-# ---------------------------------------------------------------------------
-# Entry point — required by openenv validate and [project.scripts]
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-    """Start the BugTriage OpenEnv server."""
     import uvicorn
-
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "7860"))
-    uvicorn.run(
-        "server.app:app",
-        host=host,
-        port=port,
-        workers=1,
-        log_level="info",
-    )
+    uvicorn.run("server.app:app", host=host, port=port, workers=1, log_level="info")
 
 
 if __name__ == "__main__":

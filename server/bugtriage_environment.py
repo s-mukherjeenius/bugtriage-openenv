@@ -4,7 +4,7 @@ Implements openenv.core.env_server.interfaces.Environment.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 try:
     from openenv.core.env_server.interfaces import Environment
@@ -47,7 +47,12 @@ class BugTriageEnvironment(Environment):
     # openenv API
     # ------------------------------------------------------------------
 
-    def reset(self) -> BugTriageObservation:
+    def reset(self, seed: Optional[int] = None) -> BugTriageObservation:
+        if seed is not None:
+            from app.generator import generate_scenario
+            self._scenario = generate_scenario(self._task_name, seed)
+        else:
+            self._scenario = SCENARIOS[self._task_name]
         self._reset_internal_state()
         return self._make_observation(reward=0.0)
 

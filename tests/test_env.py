@@ -282,3 +282,38 @@ class TestOpenEnvCompliance:
         env_easy.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="PAY-001", assigned_team=Team.BACKEND))
         env_easy.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="PAY-001"))
         assert 0.0 <= env_easy.grade()["score"] <= 1.0
+
+
+class TestDynamicStaticTransition:
+    """Regression: verify dynamic scenarios don't leak into static resets."""
+
+    def test_reset_seed_then_reset_reverts_to_static(self):
+        """After reset(seed=42), calling reset() must revert to static scenario."""
+        env = BugTriageEnv("single-triage")
+        r1 = env.reset(seed=42)
+        dynamic_id = r1.observation.bug_reports[0].id
+        assert dynamic_id.startswith("S"), f"Seed reset should produce generated IDs, got {dynamic_id}"
+
+        r2 = env.reset()
+        static_id = r2.observation.bug_reports[0].id
+        assert static_id == "PAY-001", f"Expected static PAY-001, got {static_id}"
+
+    def test_reset_different_seeds_different_bugs(self):
+        env = BugTriageEnv("batch-triage")
+        r1 = env.reset(seed=100)
+        ids1 = {b.id for b in r1.observation.bug_reports}
+        r2 = env.reset(seed=200)
+        ids2 = {b.id for b in r2.observation.bug_reports}
+        assert ids1 != ids2, "Different seeds must produce different bugs"
+
+    def test_dynamic_reset_clears_all_state(self):
+        env = BugTriageEnv("single-triage")
+        env.reset(seed=42)
+        bid = env.state().bug_reports[0].id
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id=bid, severity=Severity.CRITICAL))
+        assert env.state().step_number == 1
+
+        env.reset(seed=99)
+        assert env.state().step_number == 0
+        assert env.state().classifications == {}
+        assert env.state().submitted_bugs == []

@@ -7,7 +7,7 @@ and in graders.py. The agent receives only the raw BugReport objects.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from app.models import BugReport
@@ -134,7 +134,7 @@ SCENARIO_TASK1 = TaskScenario(
 # ===========================================================================
 # 8 bug reports: 1 duplicate pair (BUG-003 is duplicate of BUG-006),
 # 1 info-incomplete report (BUG-005), 1 security issue needing escalation.
-# Max steps: 24   Reward threshold: 0.65
+# Max steps: 32   Reward threshold: 0.65
 # ===========================================================================
 
 _T2_BUGS: List[BugReport] = [
