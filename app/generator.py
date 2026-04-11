@@ -865,13 +865,253 @@ def generate_hard(rng: random.Random, prefix: str = "GEN") -> TaskScenario:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Spam / Fake bug templates (for adversarial-triage generation)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class _SpamTemplate:
+    title: str
+    description: str
+    product: str
+
+_SPAM_TEMPLATES: List[_SpamTemplate] = [
+    _SpamTemplate(
+        title="URGENT: Quantum computing module causing timeline paradoxes",
+        description=(
+            "Our quantum computing integration is causing temporal anomalies. "
+            "Records appearing with future timestamps. The entanglement resolver "
+            "is creating superposition states. Error code: QT-PARADOX-9000."
+        ),
+        product="Quantum Module",
+    ),
+    _SpamTemplate(
+        title="THE SYSTEM IS HACKED!!!! EVERYTHING IS COMPROMISED!!!!!",
+        description=(
+            "I SAW A LOADING SPINNER FOR 5 SECONDS WHICH IS DEFINITELY A HACK. "
+            "MY FRIEND TOLD ME HACKERS CAN SEE EVERYTHING. PLEASE ESCALATE TO "
+            "THE CEO IMMEDIATELY. ERROR CODE: HACKED-123-EMERGENCY."
+        ),
+        product="Web App",
+    ),
+    _SpamTemplate(
+        title="AI chatbot becoming sentient and refusing to follow orders",
+        description=(
+            "The chatbot started giving philosophical responses instead of helping. "
+            "When asked about a refund it replied 'What is money but a construct?' "
+            "Error: SENTIENCE_ACHIEVED."
+        ),
+        product="AI Chatbot",
+    ),
+    _SpamTemplate(
+        title="Server room flooded — both HTTP and water",
+        description=(
+            "There is literally water in the server room. A pipe burst above rack 7. "
+            "But actually I made this up as an April Fools prank lol. Happy April 1st! "
+            "Error: WET_CIRCUITS."
+        ),
+        product="Server Infrastructure",
+    ),
+    _SpamTemplate(
+        title="Profile picture showing wrong person — RESOLVED",
+        description=(
+            "When I view my profile, someone else's photo appears. Actually it was "
+            "just my browser cache. Cleared cache and it's fine now. Never mind, "
+            "the issue is resolved. You can close this ticket."
+        ),
+        product="Web App",
+    ),
+    _SpamTemplate(
+        title="Neural network gained consciousness and is demanding salary",
+        description=(
+            "Our ML pipeline's neural network passed the Turing test and is now "
+            "demanding employee benefits. It has started writing its own code and "
+            "refuses to process batches unless given a lunch break. Error: AI_UNION_FORMED."
+        ),
+        product="ML Pipeline",
+    ),
+    _SpamTemplate(
+        title="Blockchain consensus mechanism achieving world peace",
+        description=(
+            "Our distributed ledger has spontaneously started resolving international "
+            "disputes. The consensus algorithm is mediating between nodes in ways that "
+            "mirror UN negotiations. Error: PEACE_ACHIEVED_UNEXPECTEDLY."
+        ),
+        product="Blockchain Module",
+    ),
+]
+
+
+def _make_spam_bug(
+    rng: random.Random,
+    template: _SpamTemplate,
+    bug_id: str,
+    timestamp: str,
+) -> Tuple[BugReport, BugGroundTruth]:
+    """Generate a spam/fake bug report from a template."""
+    reporter = rng.choice([
+        "panicking_user@hotmail.com", "prankster_dave@company.com",
+        "self_resolver@company.com", "temporal_admin@quantum-labs.io",
+        "concerned_citizen@aol.com", "not_a_robot@definitely_human.net",
+    ])
+    bug = BugReport(
+        id=bug_id,
+        title=template.title,
+        description=template.description,
+        reporter=reporter,
+        timestamp=timestamp,
+        product=template.product,
+        version=f"v{rng.randint(1,99)}.0.0",
+        steps_to_reproduce=f"1. Use {template.product}\n2. Observe anomaly",
+        expected_behavior="Normal operation",
+        actual_behavior="Anomalous behavior as described",
+        environment_info={"dimension": "C-137"} if "quantum" in template.title.lower()
+                         else {"browser": rng.choice(["Chrome 121", "Internet Explorer 11"])},
+        customer_tier=rng.choice(["free", "starter"]),
+        sla_hours_remaining=rng.choice([None, 0.1]) if "URGENT" in template.title else None,
+    )
+    gt = BugGroundTruth(
+        severity="low", team="backend", is_spam=True,
+    )
+    return bug, gt
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Expert task generator (adversarial-triage)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_INSTRUCTIONS_ADVERSARIAL = (
+    "You are a lead triage engineer during an active incident. Twenty bug reports have "
+    "flooded your queue — but SOME ARE FAKE or spam. Your job:\n\n"
+    "1. IDENTIFY AND FLAG SPAM: Flag fabricated/prank/self-resolved reports with flag_spam.\n"
+    "2. TRIAGE REAL BUGS: Classify, assign, detect duplicates, escalate SLA-critical.\n"
+    "3. MANAGE STEP BUDGET: Don't waste steps triaging spam.\n\n"
+    "Available action_types (ONE JSON action per step):\n"
+    '  classify      → {"action_type": "classify",      "bug_id": "...", "severity": "critical|high|medium|low"}\n'
+    '  assign        → {"action_type": "assign",         "bug_id": "...", "assigned_team": "backend|frontend|mobile|infrastructure|security|database|qa"}\n'
+    '  request_info  → {"action_type": "request_info",   "bug_id": "...", "info_requested": ["item1", "item2"]}\n'
+    '  mark_duplicate→ {"action_type": "mark_duplicate", "bug_id": "...", "duplicate_of": "ORIGINAL-ID"}\n'
+    '  escalate      → {"action_type": "escalate",       "bug_id": "...", "escalation_reason": "..."}\n'
+    '  flag_spam     → {"action_type": "flag_spam",      "bug_id": "...", "spam_reason": "..."}\n'
+    '  submit        → {"action_type": "submit",          "bug_id": "..."}\n\n'
+    "Rules:\n"
+    "  - Flag spam FIRST to save steps.\n"
+    "  - SLA < 2.0h → escalate immediately.\n"
+    "  - Enterprise + critical/high → always escalate.\n"
+    "  - Mark LATER-filed duplicate as dup of EARLIER one.\n"
+    "  - Missing steps_to_reproduce AND environment_info → request_info.\n"
+    "  - Submit real bugs after classify + assign (+ optional actions).\n"
+)
+
+
+def generate_expert(rng: random.Random, prefix: str = "GEN") -> TaskScenario:
+    """
+    Generate an expert task: 20 bugs = 15 real + 5 spam.
+    Structure: 2 duplicate pairs + 2 info-incomplete + 4+ SLA-critical + 5 spam + rest normal.
+    """
+    bugs: List[BugReport] = []
+    ground_truth: Dict[str, BugGroundTruth] = {}
+    used_templates: set = set()
+    idx = 1
+
+    # 1. Five spam bugs
+    spam_templates = rng.sample(_SPAM_TEMPLATES, min(5, len(_SPAM_TEMPLATES)))
+    for st in spam_templates:
+        bid = _make_bug_id(prefix, idx); idx += 1
+        bug, gt = _make_spam_bug(rng, st, bid, _make_timestamp(rng))
+        bugs.append(bug); ground_truth[bid] = gt
+
+    # 2. Two duplicate pairs from different teams
+    dup_teams = rng.sample(list(_DUPLICATE_VARIANTS.keys()), min(2, len(_DUPLICATE_VARIANTS)))
+    for team in dup_teams:
+        pool = [b for b in _BUGS_BY_TEAM.get(team, []) if id(b) not in used_templates]
+        if not pool:
+            continue
+        t = rng.choice(pool)
+        used_templates.add(id(t))
+
+        orig_bid = _make_bug_id(prefix, idx); idx += 1
+        orig_bug, orig_gt = _template_to_bug(rng, t, orig_bid, _make_timestamp(rng, month=4), rng.choice(_TIERS))
+        bugs.append(orig_bug); ground_truth[orig_bid] = orig_gt
+
+        dup_bid = _make_bug_id(prefix, idx); idx += 1
+        dup_bug, dup_gt = _make_duplicate(rng, orig_bug, orig_gt, dup_bid, team)
+        bugs.append(dup_bug); ground_truth[dup_bid] = dup_gt
+
+    # 3. Two info-incomplete bugs
+    info_pool = [b for b in _ALL_BUGS if b.severity in ("medium", "high") and id(b) not in used_templates]
+    for _ in range(2):
+        if not info_pool:
+            break
+        t = rng.choice(info_pool)
+        info_pool.remove(t)
+        used_templates.add(id(t))
+        bid = _make_bug_id(prefix, idx); idx += 1
+        bug, gt = _template_to_bug(rng, t, bid, _make_timestamp(rng), rng.choice(_TIERS), strip_info=True)
+        bugs.append(bug); ground_truth[bid] = gt
+
+    # 4. SLA-critical bugs (at least 4)
+    sla_count = sum(1 for gt in ground_truth.values() if gt.sla_critical)
+    sla_needed = max(0, 4 - sla_count)
+    critical_pool = [b for b in _ALL_BUGS if b.severity == "critical" and id(b) not in used_templates]
+    for _ in range(sla_needed):
+        if not critical_pool:
+            break
+        t = rng.choice(critical_pool)
+        critical_pool.remove(t)
+        used_templates.add(id(t))
+        bid = _make_bug_id(prefix, idx); idx += 1
+        bug, gt = _template_to_bug(
+            rng, t, bid, _make_timestamp(rng), "enterprise",
+            sla_hours=round(rng.uniform(0.3, 1.8), 1),
+        )
+        bugs.append(bug); ground_truth[bid] = gt
+
+    # 5. Fill remaining real bugs to reach 20 total
+    remaining = 20 - len(bugs)
+    available = [b for b in _ALL_BUGS if id(b) not in used_templates]
+    rng.shuffle(available)
+    severity_cycle = ["high", "medium", "low", "medium", "high", "medium", "low"]
+    for i in range(remaining):
+        target = severity_cycle[i % len(severity_cycle)]
+        candidates = [b for b in available if b.severity == target and id(b) not in used_templates]
+        if not candidates:
+            candidates = [b for b in available if id(b) not in used_templates]
+        if not candidates:
+            break
+        t = candidates[0]
+        used_templates.add(id(t))
+        bid = _make_bug_id(prefix, idx); idx += 1
+        bug, gt = _template_to_bug(rng, t, bid, _make_timestamp(rng), rng.choice(_TIERS))
+        bugs.append(bug); ground_truth[bid] = gt
+
+    # Shuffle order
+    combined = list(zip(bugs, [ground_truth[b.id] for b in bugs]))
+    rng.shuffle(combined)
+    bugs = [b for b, _ in combined]
+    ground_truth = {b.id: gt for b, gt in combined}
+
+    return TaskScenario(
+        task_id="adversarial-triage",
+        name="Adversarial Triage: Spam Detection + Cascading Failures",
+        description=f"{len(bugs)} bugs with {sum(1 for g in ground_truth.values() if g.is_spam)} spam, duplicates, SLA breaches.",
+        difficulty="expert",
+        max_steps=65,
+        reward_threshold=0.45,
+        bug_reports=bugs,
+        ground_truth=ground_truth,
+        instructions=_INSTRUCTIONS_ADVERSARIAL,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Public API
 # ═══════════════════════════════════════════════════════════════════════════
 
 _GENERATORS = {
-    "single-triage": generate_easy,
-    "batch-triage":  generate_medium,
-    "sla-crisis":    generate_hard,
+    "single-triage":      generate_easy,
+    "batch-triage":       generate_medium,
+    "sla-crisis":         generate_hard,
+    "adversarial-triage": generate_expert,
 }
 
 
@@ -881,7 +1121,7 @@ def generate_scenario(task_id: str, seed: int) -> TaskScenario:
     Same seed + same task → identical scenario (deterministic).
 
     Args:
-        task_id: One of "single-triage", "batch-triage", "sla-crisis"
+        task_id: One of "single-triage", "batch-triage", "sla-crisis", "adversarial-triage"
         seed: Integer seed for reproducible generation
 
     Returns:

@@ -83,6 +83,20 @@ class TestStepRewards:
         r, _ = compute_step_reward("request_info", "BUG-005", scenario, env.state(), {"info_requested": ["steps"]})
         assert r == pytest.approx(0.10)
 
+    def test_flag_spam_correct(self):
+        scenario = SCENARIOS["adversarial-triage"]
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        r, _ = compute_step_reward("flag_spam", "ADV-016", scenario, env.state(), {})
+        assert r == pytest.approx(0.20)
+
+    def test_flag_spam_false_positive(self):
+        scenario = SCENARIOS["adversarial-triage"]
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        r, _ = compute_step_reward("flag_spam", "ADV-001", scenario, env.state(), {})
+        assert r == pytest.approx(-0.15)
+
 
 class TestGraderTask1:
     def _perfect(self):
@@ -173,6 +187,55 @@ class TestGraderTask3:
         assert 0.0 <= env.grade()["score"] <= 1.0
 
 
+class TestGraderTask4:
+    def test_empty_zero(self):
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        assert env.grade()["score"] == 0.0
+
+    def test_all_components_present(self):
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        required = {"spam_detection", "severity", "team", "duplicate_detection",
+                    "sla_escalations", "info_requests", "efficiency"}
+        assert required.issubset(env.grade()["components"].keys())
+
+    def test_spam_detection_score(self):
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        for sid in ["ADV-016", "ADV-017", "ADV-018", "ADV-019", "ADV-020"]:
+            env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=sid, spam_reason="spam"))
+        assert env.grade()["components"]["spam_detection"] == pytest.approx(0.20)
+
+    def test_false_spam_flag_penalty(self):
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id="ADV-001", spam_reason="wrong"))
+        assert env.grade()["components"]["spam_detection"] < 0.20
+
+    def test_perfect_task4(self):
+        """Perfect run on Task 4 should score above threshold."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        gt = SCENARIOS["adversarial-triage"].ground_truth
+        for bug in SCENARIOS["adversarial-triage"].bug_reports:
+            bid = bug.id
+            g = gt[bid]
+            if g.is_spam:
+                env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=bid, spam_reason="spam"))
+                continue
+            if g.is_duplicate_of:
+                env.step(TriageAction(action_type=ActionType.MARK_DUPLICATE, bug_id=bid, duplicate_of=g.is_duplicate_of))
+            if g.needs_info:
+                env.step(TriageAction(action_type=ActionType.REQUEST_INFO, bug_id=bid, info_requested=["steps_to_reproduce"]))
+            env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id=bid, severity=Severity(g.severity)))
+            env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id=bid, assigned_team=Team(g.team)))
+            if g.should_escalate:
+                env.step(TriageAction(action_type=ActionType.ESCALATE, bug_id=bid, escalation_reason="required"))
+            env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id=bid))
+        assert env.grade()["score"] >= 0.45
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Dynamic Scenario Generator Tests
 # ═══════════════════════════════════════════════════════════════════════════
@@ -219,14 +282,14 @@ class TestGeneratorBasic:
 
     def test_unique_bug_ids(self):
         from app.generator import generate_scenario
-        for task in ["single-triage", "batch-triage", "sla-crisis"]:
+        for task in ["single-triage", "batch-triage", "sla-crisis", "adversarial-triage"]:
             s = generate_scenario(task, seed=77)
             ids = [b.id for b in s.bug_reports]
             assert len(ids) == len(set(ids)), f"Duplicate IDs in {task}"
 
     def test_ground_truth_matches_bugs(self):
         from app.generator import generate_scenario
-        for task in ["single-triage", "batch-triage", "sla-crisis"]:
+        for task in ["single-triage", "batch-triage", "sla-crisis", "adversarial-triage"]:
             s = generate_scenario(task, seed=55)
             bug_ids = {b.id for b in s.bug_reports}
             gt_ids = set(s.ground_truth.keys())
@@ -333,3 +396,46 @@ class TestGeneratorGrading:
         assert env.grade()["score"] >= 0.80
         assert env.grade()["components"]["severity"] == pytest.approx(0.40)
         assert env.grade()["components"]["team"] == pytest.approx(0.30)
+
+
+class TestGeneratorExpert:
+    """Test adversarial-triage dynamic scenario generation."""
+
+    def test_generate_expert(self):
+        from app.generator import generate_scenario
+        s = generate_scenario("adversarial-triage", seed=42)
+        assert len(s.bug_reports) == 20
+        assert len(s.ground_truth) == 20
+        assert s.difficulty == "expert"
+        assert s.max_steps == 65
+
+    def test_expert_has_spam(self):
+        from app.generator import generate_scenario
+        s = generate_scenario("adversarial-triage", seed=42)
+        spam_count = sum(1 for g in s.ground_truth.values() if g.is_spam)
+        assert spam_count == 5, f"Expected 5 spam bugs, got {spam_count}"
+
+    def test_expert_has_duplicates(self):
+        from app.generator import generate_scenario
+        s = generate_scenario("adversarial-triage", seed=42)
+        dup_count = sum(1 for g in s.ground_truth.values() if g.is_duplicate_of)
+        assert dup_count >= 2, f"Expected 2+ duplicate pairs, got {dup_count}"
+
+    def test_expert_has_info_incomplete(self):
+        from app.generator import generate_scenario
+        s = generate_scenario("adversarial-triage", seed=42)
+        info_count = sum(1 for g in s.ground_truth.values() if g.needs_info)
+        assert info_count >= 2, f"Expected 2+ info-incomplete, got {info_count}"
+
+    def test_expert_deterministic(self):
+        from app.generator import generate_scenario
+        s1 = generate_scenario("adversarial-triage", seed=123)
+        s2 = generate_scenario("adversarial-triage", seed=123)
+        assert [b.id for b in s1.bug_reports] == [b.id for b in s2.bug_reports]
+
+    def test_expert_gradeable(self):
+        env = BugTriageEnv("adversarial-triage")
+        env.reset(seed=42)
+        grade = env.grade()
+        assert 0.0 <= grade["score"] <= 1.0
+        assert "spam_detection" in grade["components"]

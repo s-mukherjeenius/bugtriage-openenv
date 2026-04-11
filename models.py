@@ -46,6 +46,7 @@ class ActionType(str, Enum):
     REQUEST_INFO   = "request_info"
     MARK_DUPLICATE = "mark_duplicate"
     ESCALATE       = "escalate"
+    FLAG_SPAM      = "flag_spam"
     SUBMIT         = "submit"
 
 
@@ -64,6 +65,7 @@ class BugTriageAction(Action):
       request_info    → info_requested
       mark_duplicate  → duplicate_of
       escalate        → escalation_reason
+      flag_spam       → spam_reason
       submit          → (no extra fields)
     """
 
@@ -75,6 +77,7 @@ class BugTriageAction(Action):
     duplicate_of:      Optional[str]         = Field(None, description="Original bug ID for 'mark_duplicate'")
     info_requested:    Optional[List[str]]   = Field(None, description="Info items for 'request_info'")
     escalation_reason: Optional[str]         = Field(None, description="Reason text for 'escalate'")
+    spam_reason:       Optional[str]         = Field(None, description="Reason for flagging as spam (Task 4)")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +109,7 @@ class BugTriageObservation(Observation):
     # ── triage state ──
     unprocessed_bug_ids:    List[str]        = Field(default_factory=list)
     submitted_bug_ids:      List[str]        = Field(default_factory=list)
+    flagged_spam_ids:       List[str]        = Field(default_factory=list)
     current_classifications: Dict[str, str]  = Field(default_factory=dict)
     current_assignments:     Dict[str, str]  = Field(default_factory=dict)
     duplicate_map:           Dict[str, str]  = Field(default_factory=dict)

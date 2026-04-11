@@ -150,6 +150,14 @@ def compute_step_reward(
             reward = -0.08
             msg_parts.append(f"✗ Submitted '{bug_id}' without classify or assign")
 
+    elif action_type == "flag_spam":
+        if gt.is_spam:
+            reward = 0.20
+            msg_parts.append(f"✓ Correctly flagged '{bug_id}' as spam")
+        else:
+            reward = -0.15
+            msg_parts.append(f"✗ Falsely flagged real bug '{bug_id}' as spam")
+
     return _clamp(reward, -0.15, 0.20), "; ".join(msg_parts)
 
 
@@ -412,10 +420,101 @@ class BugGroundTruthStub:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+
+def grade_adversarial_triage(state: "BugTriageState", scenario: "TaskScenario") -> Dict:
+    """
+    Weights:
+      spam detection            20%  (correctly flagging fakes, not flagging real)
+      severity accuracy          20%  (non-spam bugs only)
+      team accuracy              15%
+      duplicate detection        15%
+      SLA-critical escalations   15%
+      info requests              10%
+      efficiency                  5%
+    """
+    gt_map = scenario.ground_truth
+    bug_ids = [b.id for b in scenario.bug_reports]
+    real_ids = [bid for bid in bug_ids if not gt_map[bid].is_spam]
+    spam_ids = [bid for bid in bug_ids if gt_map[bid].is_spam]
+    n_real = len(real_ids)
+    components: Dict[str, float] = {}
+
+    # Spam detection (20%)
+    flagged = set(getattr(state, 'flagged_spam', []))
+    correct_flags = sum(1 for sid in spam_ids if sid in flagged)
+    false_flags = sum(1 for bid in flagged if bid not in spam_ids)
+    # Missed spam that was submitted = also bad
+    missed_spam = sum(1 for sid in spam_ids if sid in state.submitted_bugs and sid not in flagged)
+    if spam_ids:
+        spam_score = (correct_flags / len(spam_ids)) - false_flags * 0.20 - missed_spam * 0.10
+    else:
+        spam_score = 1.0
+    components["spam_detection"] = _clamp(spam_score) * 0.20
+
+    # Severity accuracy (20%) - only real bugs
+    sev_scores = []
+    for bid in real_ids:
+        gt = gt_map[bid]
+        predicted = state.classifications.get(bid, "")
+        sev_scores.append(_severity_adjacent(predicted, gt.severity) if predicted else 0.0)
+    components["severity"] = (sum(sev_scores) / n_real) * 0.20 if n_real else 0.0
+
+    # Team accuracy (15%) - only real bugs
+    team_correct = sum(1 for bid in real_ids if state.assignments.get(bid, "") == gt_map[bid].team)
+    components["team"] = (team_correct / n_real) * 0.15 if n_real else 0.0
+
+    # Duplicate detection (15%)
+    expected_dups = {bid: gt.is_duplicate_of for bid, gt in gt_map.items() if gt.is_duplicate_of}
+    if expected_dups:
+        dup_hits = sum(1 for dup_id, orig_id in expected_dups.items() if state.duplicates.get(dup_id) == orig_id)
+        false_dup_count = sum(1 for bid in state.duplicates if bid not in expected_dups)
+        dup_score = (dup_hits / len(expected_dups)) - false_dup_count * 0.15
+    else:
+        dup_score = 1.0
+    components["duplicate_detection"] = _clamp(dup_score) * 0.15
+
+    # SLA escalations (15%)
+    sla_critical_ids = [bid for bid, gt in gt_map.items() if gt.sla_critical and gt.should_escalate]
+    if sla_critical_ids:
+        esc_count = sum(1 for sid in sla_critical_ids if sid in state.escalations)
+        sla_score = esc_count / len(sla_critical_ids)
+        low_sev_esc = sum(1 for bid in state.escalations
+                          if gt_map.get(bid) and gt_map[bid].severity in ("low", "medium") and not gt_map[bid].should_escalate)
+        sla_score -= low_sev_esc * 0.10
+    else:
+        sla_score = 1.0
+    components["sla_escalations"] = _clamp(sla_score) * 0.15
+
+    # Info requests (10%)
+    info_needed = [bid for bid, gt in gt_map.items() if gt.needs_info]
+    if info_needed:
+        info_hits = sum(1 for bid in info_needed if bid in state.info_requests)
+        false_info = sum(1 for bid in state.info_requests if bid not in info_needed)
+        info_score = (info_hits / len(info_needed)) - false_info * 0.10
+    else:
+        info_score = 1.0
+    components["info_requests"] = _clamp(info_score) * 0.10
+
+    # Efficiency (5%)
+    total_bugs = len(scenario.bug_reports)
+    if state.submitted_bugs and state.step_number > 0:
+        eff = _efficiency_factor(state.step_number, scenario.max_steps, total_bugs)
+    else:
+        eff = 0.0
+    components["efficiency"] = eff * 0.05
+
+    total = _clamp(sum(components.values()))
+    return {"score": round(total, 4), "components": {k: round(v, 4) for k, v in components.items()}}
+
+
+# ---------------------------------------------------------------------------
+#
+
 GRADERS = {
     "single-triage": grade_single_triage,
     "batch-triage":  grade_batch_triage,
     "sla-crisis":    grade_sla_crisis,
+    "adversarial-triage": grade_adversarial_triage,
 }
 
 

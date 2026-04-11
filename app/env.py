@@ -41,6 +41,12 @@ _TASK_DESCRIPTIONS = {
         "Handle SLA-critical escalations first, identify duplicates, request missing "
         "info, then process and submit all remaining bugs within the step budget."
     ),
+    "adversarial-triage": (
+        "Twenty bug reports have flooded in — but some are spam or fabricated. "
+        "Identify and flag fake reports, triage the real ones, detect duplicates, "
+        "handle cascading root-cause chains, and manage ticking SLA timers that "
+        "decrease with each step."
+    ),
 }
 
 
@@ -91,6 +97,7 @@ class BugTriageEnv:
             duplicates={},
             escalations=[],
             info_requests={},
+            flagged_spam=[],
             submitted_bugs=[],
             total_reward=0.0,
             done=False,
@@ -211,6 +218,10 @@ class BugTriageEnv:
             if bug_id not in st.escalations:
                 st.escalations.append(bug_id)
 
+        elif action_type == "flag_spam":
+            if bug_id not in st.flagged_spam:
+                st.flagged_spam.append(bug_id)
+
         elif action_type == "submit":
             if bug_id not in st.submitted_bugs:
                 st.submitted_bugs.append(bug_id)
@@ -232,7 +243,9 @@ class BugTriageEnv:
 
     def _check_done(self) -> bool:
         st = self._state
-        return (len(st.submitted_bugs) >= len(st.bug_reports)
+        # Flagged spam + submitted = all accounted for
+        accounted = len(st.submitted_bugs) + len(st.flagged_spam)
+        return (accounted >= len(st.bug_reports)
                 or st.step_number >= st.max_steps)
 
     def _make_observation(self) -> BugTriageObservation:
@@ -251,6 +264,7 @@ class BugTriageEnv:
             current_assignments=dict(st.assignments),
             duplicate_map=dict(st.duplicates),
             escalated_bug_ids=list(st.escalations),
+            flagged_spam_ids=list(st.flagged_spam),
             available_teams=_AVAILABLE_TEAMS,
             steps_remaining=max(0, st.max_steps - st.step_number),
             cumulative_reward=round(st.total_reward, 4),

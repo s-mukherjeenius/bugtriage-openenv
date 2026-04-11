@@ -22,3 +22,10 @@ def env_hard():
     env = BugTriageEnv("sla-crisis")
     env.reset()
     return env
+
+
+@pytest.fixture
+def env_expert():
+    env = BugTriageEnv("adversarial-triage")
+    env.reset()
+    return env

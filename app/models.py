@@ -37,6 +37,7 @@ class ActionType(str, Enum):
     REQUEST_INFO = "request_info"     # Ask reporter for more details
     MARK_DUPLICATE = "mark_duplicate" # Mark bug as duplicate of another
     ESCALATE = "escalate"             # Escalate to engineering leadership
+    FLAG_SPAM = "flag_spam"           # Flag a report as spam/fake (Task 4)
     SUBMIT = "submit"                 # Finalise triage for this bug
 
 
@@ -107,6 +108,9 @@ class TriageAction(BaseModel):
     escalation_reason: Optional[str] = Field(
         None, description="Reason string for 'escalate' action"
     )
+    spam_reason: Optional[str] = Field(
+        None, description="Reason for flagging as spam (Task 4)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +152,9 @@ class BugTriageObservation(BaseModel):
     )
     escalated_bug_ids: List[str] = Field(
         default_factory=list, description="Bug IDs that have been escalated"
+    )
+    flagged_spam_ids: List[str] = Field(
+        default_factory=list, description="Bug IDs flagged as spam/fake"
     )
 
     available_teams: List[str] = Field(
@@ -200,6 +207,7 @@ class BugTriageState(BaseModel):
     duplicates: Dict[str, str]             # bug_id → original_id
     escalations: List[str]                 # escalated bug_ids
     info_requests: Dict[str, List[str]]    # bug_id → [requested items]
+    flagged_spam: List[str] = []           # bug_ids flagged as spam
     submitted_bugs: List[str]              # finalised bug_ids
 
     total_reward: float
@@ -228,7 +236,7 @@ class TaskInfo(BaseModel):
     id: str
     name: str
     description: str
-    difficulty: Literal["easy", "medium", "hard"]
+    difficulty: Literal["easy", "medium", "hard", "expert"]
     max_steps: int
     num_bugs: int
     reward_threshold: float

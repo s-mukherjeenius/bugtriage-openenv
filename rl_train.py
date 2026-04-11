@@ -57,6 +57,16 @@ SEVERITIES = ["critical", "high", "medium", "low"]
 TEAMS      = ["backend", "frontend", "mobile", "infrastructure",
               "security", "database", "qa"]
 
+# Spam detection keywords for the spam policy head
+_SPAM_KEYWORDS_RL = [
+    "quantum", "paradox", "sentient", "sentience", "timeline", "dimension",
+    "april fools", "just kidding", "lol", "prank", "made this up",
+    "never mind", "already resolved", "false alarm", "you can close",
+    "hacked!!", "hackers everywhere", "consciousness", "superposition",
+    "wet_circuits", "qt-paradox", "sentience_achieved", "hacked-123",
+]
+_SPAM_PRODUCTS_RL = ["quantum module", "ai chatbot", "ml pipeline", "blockchain module"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Policy Network — REINFORCE with baseline + entropy bonus
@@ -145,9 +155,18 @@ def encode_bug(bug: Dict) -> np.ndarray:
     tier = bug.get("customer_tier", "free")
     f.append(1.0 if tier in ("enterprise", "business") else 0.0)
     f.append(1.0 if not bug.get("steps_to_reproduce") and not bug.get("environment_info") else 0.0)
+    # Spam features (3 additional dimensions)
+    product = bug.get("product", "").lower()
+    spam_product = 1.0 if any(sp in product for sp in _SPAM_PRODUCTS_RL) else 0.0
+    spam_keyword_count = sum(1 for kw in _SPAM_KEYWORDS_RL if kw in desc)
+    spam_kw = min(1.0, spam_keyword_count / 3.0)  # normalize: 3+ keywords = 1.0
+    alpha_chars = [c for c in bug.get("description", "") if c.isalpha()]
+    caps_ratio = (sum(1 for c in alpha_chars if c.isupper()) / max(1, len(alpha_chars)))
+    spam_caps = 1.0 if caps_ratio > 0.5 else 0.0
+    f.extend([spam_product, spam_kw, spam_caps])
     return np.array(f, dtype=np.float64)
 
-BUG_DIM = 13
+BUG_DIM = 16  # 13 original + 3 spam features
 
 def encode_assign(bug: Dict, severity_idx: int) -> np.ndarray:
     base = encode_bug(bug)
@@ -199,8 +218,8 @@ def run_episode(
     reset_resp = session.post(f"{ENV_URL}/reset", json=reset_body, timeout=30).json()
     obs = reset_resp.get("observation", {})
 
-    max_steps_map = {"single-triage": 5, "batch-triage": 32, "sla-crisis": 50}
-    max_steps = max_steps_map.get(task, 50)
+    max_steps_map = {"single-triage": 5, "batch-triage": 32, "sla-crisis": 50, "adversarial-triage": 65}
+    max_steps = max_steps_map.get(task, 65)
 
     bug_reports = obs.get("bug_reports", [])
     all_bug_ids = [b.get("id", "") for b in bug_reports]
@@ -220,9 +239,34 @@ def run_episode(
         done = resp.get("done", False)
         return rew
 
+    # ── Phase 0 (adversarial only): Flag spam ─────────────────────────────
+    if task == "adversarial-triage":
+        for bug_id in all_bug_ids:
+            if done or step_count >= max_steps - len(all_bug_ids) * 2:
+                break
+            bug = bug_by_id.get(bug_id, {})
+            state_s = encode_bug(bug)
+            ai_spam, _ = nets["spam"].select(state_s, epsilon if train else 0.0)
+            if ai_spam == 1:
+                rew = do_step({
+                    "action_type": "flag_spam", "bug_id": bug_id,
+                    "spam_reason": "Spam indicators detected"
+                })
+                if train:
+                    nets["spam"].update(state_s, ai_spam, rew)
+                if done:
+                    break
+            else:
+                if train:
+                    nets["spam"].update(state_s, ai_spam, 0.01)
+
+    # Refresh unprocessed list after spam flagging
+    flagged_spam = set(obs.get("flagged_spam_ids", []))
+    real_bug_ids = [bid for bid in all_bug_ids if bid not in flagged_spam]
+
     # ── Phase 1: Classify + Assign all bugs ──────────────────────────────
-    for bug_id in all_bug_ids:
-        if done or step_count >= max_steps - len(all_bug_ids):
+    for bug_id in real_bug_ids:
+        if done or step_count >= max_steps - len(real_bug_ids):
             break
         bug = bug_by_id.get(bug_id, {})
 
@@ -243,7 +287,7 @@ def run_episode(
             nets["assign"].update(state_a, ti, rew)
 
     # ── Phase 2: Info / Escalate / Duplicate (full context) ──────────────
-    for bug_id in all_bug_ids:
+    for bug_id in real_bug_ids:
         if done or step_count >= max_steps - len(all_bug_ids):
             break
         bug = bug_by_id.get(bug_id, {})
@@ -298,8 +342,8 @@ def run_episode(
             if train:
                 nets["duplicate"].update(state_d, ai_dup, 0.01)
 
-    # ── Phase 3: Submit all ──────────────────────────────────────────────
-    for bug_id in all_bug_ids:
+    # ── Phase 3: Submit all (real bugs only) ─────────────────────────────
+    for bug_id in real_bug_ids:
         if done or step_count >= max_steps:
             break
         submitted = obs.get("submitted_bug_ids", [])
@@ -346,15 +390,18 @@ def main():
     # ── Interactive task selection ────────────────────────────
     if not os.getenv("RL_TASK"):
         print("\n  Select a task to train on:")
-        print("  [1] single-triage  (Easy  — 1 bug,  5 steps)")
-        print("  [2] batch-triage   (Medium — 8 bugs, 32 steps)")
-        print("  [3] sla-crisis     (Hard  — 15 bugs, 50 steps)")
+        print("  [1] single-triage       (Easy   — 1 bug,  5 steps)")
+        print("  [2] batch-triage        (Medium — 8 bugs, 32 steps)")
+        print("  [3] sla-crisis          (Hard   — 15 bugs, 50 steps)")
+        print("  [4] adversarial-triage  (Expert — 20 bugs, 65 steps)")
         try:
             choice = input("\n  Enter 1, 2, or 3 (default=2): ").strip()
             if choice == "1":
                 TASK = "single-triage"
             elif choice == "3":
                 TASK = "sla-crisis"
+            elif choice == "4":
+                TASK = "adversarial-triage"
             else:
                 TASK = "batch-triage"
         except (EOFError, KeyboardInterrupt):
@@ -387,6 +434,7 @@ def main():
         "info":      PolicyNet(BUG_DIM, 16, 2, LR, "Info"),
         "escalate":  PolicyNet(BUG_DIM, 16, 2, LR, "Escalate"),
         "duplicate": PolicyNet(BUG_DIM + 2, 16, 2, LR, "Duplicate"),
+        "spam":      PolicyNet(BUG_DIM, 16, 2, LR, "Spam"),
     }
     total_params = sum(n.param_count for n in nets.values())
 
@@ -395,7 +443,8 @@ def main():
     print(f"  Task: {TASK}  |  Episodes: {N_EPISODES}  |  Params: {total_params}")
     print(f"{'='*70}")
     print(f"  Algorithm: REINFORCE + EMA baseline + entropy (β={ENTROPY_BETA})")
-    print(f"  Episode flow: Classify All → Assign All → Info/Esc/Dup → Submit All")
+    print(f"  Policy heads: classify, assign, info, escalate, duplicate, spam")
+    print(f"  Episode flow: {'Flag Spam → ' if TASK == 'adversarial-triage' else ''}Classify All → Assign All → Info/Esc/Dup → Submit All")
     print(f"  Duplicate targeting: Jaccard text similarity (no hardcoded targets)")
     print(f"  Exploration: ε = {EPS_START:.0%} → {EPS_END:.0%} over {int(N_EPISODES * EPS_DECAY_FRAC)} eps")
     print(f"  LR: {LR}")
@@ -411,10 +460,17 @@ def main():
     # Training loop
     print(f"\n{'─'*70}")
     print(f"TRAINING ({N_EPISODES} episodes)\n")
-    print(f"  {'Ep':>5}  {'Score':>6}  {'Avg50':>6}  {'ε':>5}  "
-          f"{'Sev':>5}  {'Team':>5}  {'Dup':>5}  {'Esc':>5}  {'Info':>5}  {'Progress'}")
-    print(f"  {'─'*5}  {'─'*6}  {'─'*6}  {'─'*5}  "
-          f"{'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*22}")
+    is_adv = TASK == "adversarial-triage"
+    if is_adv:
+        print(f"  {'Ep':>5}  {'Score':>6}  {'Avg50':>6}  {'ε':>5}  "
+              f"{'Sev':>5}  {'Team':>5}  {'Dup':>5}  {'Esc':>5}  {'Spam':>5}  {'Progress'}")
+        print(f"  {'─'*5}  {'─'*6}  {'─'*6}  {'─'*5}  "
+              f"{'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*22}")
+    else:
+        print(f"  {'Ep':>5}  {'Score':>6}  {'Avg50':>6}  {'ε':>5}  "
+              f"{'Sev':>5}  {'Team':>5}  {'Dup':>5}  {'Esc':>5}  {'Info':>5}  {'Progress'}")
+        print(f"  {'─'*5}  {'─'*6}  {'─'*6}  {'─'*5}  "
+              f"{'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*5}  {'─'*22}")
 
     scores = []
     best_avg = 0.0
@@ -436,12 +492,20 @@ def main():
                 if avg50 > 0.5: marker = " ★★"
                 elif avg50 > 0.4: marker = " ★"
 
-            print(f"  {ep:>5}  {result.score:>6.3f}  {avg50:>6.3f}  {eps:>5.2f}  "
-                  f"{c.get('severity',0):>5.2f}  {c.get('team',0):>5.2f}  "
-                  f"{c.get('duplicate_detection',0):>5.2f}  "
-                  f"{c.get('security_escalation', c.get('sla_escalations',0)):>5.2f}  "
-                  f"{c.get('info_request', c.get('info_requests',0)):>5.2f}  "
-                  f"|{bar}|{marker}")
+            if is_adv:
+                print(f"  {ep:>5}  {result.score:>6.3f}  {avg50:>6.3f}  {eps:>5.2f}  "
+                      f"{c.get('severity',0):>5.2f}  {c.get('team',0):>5.2f}  "
+                      f"{c.get('duplicate_detection',0):>5.2f}  "
+                      f"{c.get('sla_escalations',0):>5.2f}  "
+                      f"{c.get('spam_detection',0):>5.2f}  "
+                      f"|{bar}|{marker}")
+            else:
+                print(f"  {ep:>5}  {result.score:>6.3f}  {avg50:>6.3f}  {eps:>5.2f}  "
+                      f"{c.get('severity',0):>5.2f}  {c.get('team',0):>5.2f}  "
+                      f"{c.get('duplicate_detection',0):>5.2f}  "
+                      f"{c.get('security_escalation', c.get('sla_escalations',0)):>5.2f}  "
+                      f"{c.get('info_request', c.get('info_requests',0)):>5.2f}  "
+                      f"|{bar}|{marker}")
 
     elapsed = time.time() - start
 

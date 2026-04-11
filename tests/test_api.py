@@ -14,13 +14,13 @@ class TestHealth:
 
 
 class TestTasks:
-    def test_returns_three(self):
+    def test_returns_four(self):
         tasks = client.get("/tasks").json()
-        assert len(tasks) == 3
+        assert len(tasks) == 4
 
     def test_difficulty_range(self):
         difficulties = {t["difficulty"] for t in client.get("/tasks").json()}
-        assert difficulties == {"easy", "medium", "hard"}
+        assert difficulties == {"easy", "medium", "hard", "expert"}
 
 
 class TestReset:
@@ -40,6 +40,7 @@ class TestReset:
         assert len(client.post("/reset", json={"task": "single-triage"}).json()["observation"]["bug_reports"]) == 1
         assert len(client.post("/reset", json={"task": "batch-triage"}).json()["observation"]["bug_reports"]) == 8
         assert len(client.post("/reset", json={"task": "sla-crisis"}).json()["observation"]["bug_reports"]) == 15
+        assert len(client.post("/reset", json={"task": "adversarial-triage"}).json()["observation"]["bug_reports"]) == 20
 
     def test_invalid_task_422(self):
         assert client.post("/reset", json={"task": "nonexistent"}).status_code == 422
@@ -180,3 +181,36 @@ class TestGrade:
         client.post("/step", json={"action_type": "assign", "bug_id": "PAY-001", "assigned_team": "backend"})
         after = client.post("/grade").json()["score"]
         assert after > before
+
+
+class TestTask4API:
+    """Tests for Task 4 adversarial-triage via HTTP API."""
+
+    def test_reset_task4(self):
+        r = client.post("/reset", json={"task": "adversarial-triage"})
+        assert r.status_code == 200
+        assert len(r.json()["observation"]["bug_reports"]) == 20
+
+    def test_flag_spam_action(self):
+        client.post("/reset", json={"task": "adversarial-triage"})
+        r = client.post("/step", json={"action_type": "flag_spam", "bug_id": "ADV-016", "spam_reason": "fake"})
+        assert r.status_code == 200
+        assert r.json()["reward"] > 0
+
+    def test_flagged_spam_in_observation(self):
+        client.post("/reset", json={"task": "adversarial-triage"})
+        r = client.post("/step", json={"action_type": "flag_spam", "bug_id": "ADV-017", "spam_reason": "panic"})
+        obs = r.json()["observation"]
+        assert "ADV-017" in obs["flagged_spam_ids"]
+        assert "ADV-017" not in obs["unprocessed_bug_ids"]
+
+    def test_task4_grade_has_spam_component(self):
+        client.post("/reset", json={"task": "adversarial-triage"})
+        grade = client.post("/grade").json()
+        assert "spam_detection" in grade["components"]
+
+    def test_task4_dynamic_seed(self):
+        r = client.post("/reset", json={"task": "adversarial-triage", "seed": 42})
+        assert r.status_code == 200
+        assert len(r.json()["observation"]["bug_reports"]) == 20
+        assert r.json()["info"]["generated"] is True

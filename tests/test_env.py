@@ -230,11 +230,13 @@ class TestScenarios:
         assert len(SCENARIOS["single-triage"].bug_reports) == 1
         assert len(SCENARIOS["batch-triage"].bug_reports) == 8
         assert len(SCENARIOS["sla-crisis"].bug_reports) == 15
+        assert len(SCENARIOS["adversarial-triage"].bug_reports) == 20
 
     def test_difficulties(self):
         assert SCENARIOS["single-triage"].difficulty == "easy"
         assert SCENARIOS["batch-triage"].difficulty == "medium"
         assert SCENARIOS["sla-crisis"].difficulty == "hard"
+        assert SCENARIOS["adversarial-triage"].difficulty == "expert"
 
     def test_unique_bug_ids(self):
         for task_id, scenario in SCENARIOS.items():
@@ -282,6 +284,79 @@ class TestOpenEnvCompliance:
         env_easy.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="PAY-001", assigned_team=Team.BACKEND))
         env_easy.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="PAY-001"))
         assert 0.0 <= env_easy.grade()["score"] <= 1.0
+
+
+class TestTask4FlagSpam:
+    """Test Task 4 adversarial-triage: spam detection and flag_spam action."""
+
+    def test_flag_spam_correct_positive_reward(self, env_expert):
+        """Flagging a known spam bug should give positive reward."""
+        result = env_expert.step(
+            TriageAction(action_type=ActionType.FLAG_SPAM, bug_id="ADV-016", spam_reason="Fake product")
+        )
+        assert result.reward > 0.10
+
+    def test_flag_spam_wrong_negative_reward(self, env_expert):
+        """Flagging a real bug as spam should give negative reward."""
+        result = env_expert.step(
+            TriageAction(action_type=ActionType.FLAG_SPAM, bug_id="ADV-001", spam_reason="test")
+        )
+        assert result.reward < 0
+
+    def test_flagged_spam_tracked_in_state(self, env_expert):
+        env_expert.step(
+            TriageAction(action_type=ActionType.FLAG_SPAM, bug_id="ADV-016", spam_reason="Fake")
+        )
+        assert "ADV-016" in env_expert.state().flagged_spam
+
+    def test_flagged_spam_removed_from_unprocessed(self, env_expert):
+        result = env_expert.step(
+            TriageAction(action_type=ActionType.FLAG_SPAM, bug_id="ADV-017", spam_reason="Panic")
+        )
+        assert "ADV-017" not in result.observation.unprocessed_bug_ids
+        assert "ADV-017" in result.observation.flagged_spam_ids
+
+    def test_done_when_all_submitted_and_flagged(self, env_expert):
+        """Episode should end when submitted + flagged = total bugs."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        gt = SCENARIOS["adversarial-triage"].ground_truth
+        for bug in SCENARIOS["adversarial-triage"].bug_reports:
+            bid = bug.id
+            g = gt[bid]
+            if g.is_spam:
+                env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=bid, spam_reason="spam"))
+            else:
+                env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id=bid, severity=Severity(g.severity)))
+                env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id=bid, assigned_team=Team(g.team)))
+                result = env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id=bid))
+                if result.done:
+                    break
+        assert env.state().done is True
+
+    def test_task4_grader_has_spam_component(self, env_expert):
+        grade = env_expert.grade()
+        assert "spam_detection" in grade["components"]
+
+    def test_task4_perfect_spam_detection_score(self):
+        """Correctly flagging all 5 spam bugs should yield max spam_detection component."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        spam_ids = ["ADV-016", "ADV-017", "ADV-018", "ADV-019", "ADV-020"]
+        for sid in spam_ids:
+            env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=sid, spam_reason="spam"))
+        grade = env.grade()
+        assert grade["components"]["spam_detection"] == pytest.approx(0.20)
+
+    def test_task4_scenario_has_spam_bugs(self):
+        gt = SCENARIOS["adversarial-triage"].ground_truth
+        spam_count = sum(1 for g in gt.values() if g.is_spam)
+        assert spam_count == 5
+
+    def test_task4_scenario_has_duplicates(self):
+        gt = SCENARIOS["adversarial-triage"].ground_truth
+        dup_count = sum(1 for g in gt.values() if g.is_duplicate_of)
+        assert dup_count == 2
 
 
 class TestDynamicStaticTransition:

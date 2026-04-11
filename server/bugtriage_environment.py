@@ -29,6 +29,10 @@ _TASK_DESCRIPTIONS = {
     "single-triage": "Classify severity, assign to team, and submit one critical bug.",
     "batch-triage": "Process 8 bugs: classify, assign, detect duplicates, escalate, submit.",
     "sla-crisis": "Triage 15 simultaneous bugs under SLA pressure with duplicates and escalations.",
+    "adversarial-triage": (
+        "20 bugs with 5 spam/fakes, duplicate pairs, root-cause chains, and SLA escalations. "
+        "Agent must detect spam and triage real bugs under step pressure."
+    ),
 }
 
 
@@ -72,6 +76,7 @@ class BugTriageEnvironment(Environment):
         if action.assigned_team:  hist["assigned_team"] = action.assigned_team.value
         if action.duplicate_of:   hist["duplicate_of"] = action.duplicate_of
         if action.info_requested: hist["info_requested"] = action.info_requested
+        if action.spam_reason:    hist["spam_reason"] = action.spam_reason
         self._action_history.append(hist)
 
         self._done = self._check_done()
@@ -94,6 +99,7 @@ class BugTriageEnvironment(Environment):
             classifications=dict(self._classifications), assignments=dict(self._assignments),
             duplicates=dict(self._duplicates), escalations=list(self._escalations),
             info_requests=dict(self._info_requests), submitted_bugs=list(self._submitted_bugs),
+            flagged_spam=list(self._flagged_spam),
             total_reward=self._total_reward, done=self._done, episode_complete=self._done,
         )
         return grade_episode(self._task_name, internal, self._scenario)
@@ -112,6 +118,7 @@ class BugTriageEnvironment(Environment):
         self._escalations: list = []
         self._info_requests: Dict[str, list] = {}
         self._submitted_bugs: list = []
+        self._flagged_spam: list = []
         self._action_history: list = []
 
     def _apply_action(self, action: BugTriageAction):
@@ -139,6 +146,8 @@ class BugTriageEnvironment(Environment):
             self._duplicates[bug_id] = action.duplicate_of
         elif atype == "escalate":
             if bug_id not in self._escalations: self._escalations.append(bug_id)
+        elif atype == "flag_spam":
+            if bug_id not in self._flagged_spam: self._flagged_spam.append(bug_id)
         elif atype == "submit":
             if bug_id not in self._submitted_bugs: self._submitted_bugs.append(bug_id)
 
@@ -149,6 +158,7 @@ class BugTriageEnvironment(Environment):
             classifications=dict(self._classifications), assignments=dict(self._assignments),
             duplicates=dict(self._duplicates), escalations=list(self._escalations),
             info_requests=dict(self._info_requests), submitted_bugs=list(self._submitted_bugs),
+            flagged_spam=list(self._flagged_spam),
             total_reward=self._total_reward, done=self._done, episode_complete=self._done,
         )
         payload = {}
@@ -159,19 +169,23 @@ class BugTriageEnvironment(Environment):
         return compute_step_reward(atype, bug_id, self._scenario, tmp, payload)
 
     def _check_done(self) -> bool:
-        return (len(self._submitted_bugs) >= len(self._scenario.bug_reports)
+        accounted = len(self._submitted_bugs) + len(self._flagged_spam)
+        return (accounted >= len(self._scenario.bug_reports)
                 or self._step_number >= self._scenario.max_steps)
 
     def _make_observation(self, reward: float = 0.0, done: bool = False) -> BugTriageObservation:
         submitted_set = set(self._submitted_bugs)
+        flagged_set = set(self._flagged_spam)
         return BugTriageObservation(
             reward=round(reward, 4), done=done,
             step_number=self._step_number, task_name=self._task_name,
             task_description=_TASK_DESCRIPTIONS.get(self._task_name, ""),
             instructions=self._scenario.instructions,
             bug_reports=[b.model_dump() for b in self._scenario.bug_reports],
-            unprocessed_bug_ids=[b.id for b in self._scenario.bug_reports if b.id not in submitted_set],
+            unprocessed_bug_ids=[b.id for b in self._scenario.bug_reports
+                                 if b.id not in submitted_set and b.id not in flagged_set],
             submitted_bug_ids=list(self._submitted_bugs),
+            flagged_spam_ids=list(self._flagged_spam),
             current_classifications=dict(self._classifications),
             current_assignments=dict(self._assignments),
             duplicate_map=dict(self._duplicates),

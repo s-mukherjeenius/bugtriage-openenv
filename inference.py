@@ -1,7 +1,7 @@
 """
 BugTriage OpenEnv — Inference Script
 =====================================
-Runs a language model against all three BugTriage tasks using the OpenAI client.
+Runs a language model against all four BugTriage tasks using the OpenAI client.
 Outputs strictly-formatted [START] / [STEP] / [END] log lines for evaluation.
 
 Mandatory environment variables:
@@ -15,14 +15,13 @@ Optional:
 STDOUT FORMAT (must match exactly — any deviation = incorrect scoring):
   [START] task=<task_name> env=<benchmark> model=<model_name>
   [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-  [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...,rn>
+  [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
 
 Rules:
   - One [START] line at episode begin.
   - One [STEP] line per step, immediately after env.step() returns.
   - One [END] line always emitted (even on exception) via finally block.
   - reward and rewards formatted to 2 decimal places.
-  - score formatted to 3 decimal places.
   - done and success are lowercase booleans: true or false.
   - error is the raw error string, or null if none.
   - All fields on a single line with no newlines within a line.
@@ -46,7 +45,9 @@ from openai import OpenAI
 
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-API_KEY: str      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY: str      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+if not API_KEY:
+    raise ValueError("HF_TOKEN environment variable is required")
 ENV_URL: str      = os.getenv("ENV_URL", "http://localhost:7860").rstrip("/")
 
 BENCHMARK: str         = "bugtriage-openenv"
@@ -55,13 +56,30 @@ MAX_TOKENS: int        = 300
 SUCCESS_THRESHOLD: float = 0.50
 MAX_LLM_RETRIES: int  = 2
 
-TASKS: List[str] = ["single-triage", "batch-triage", "sla-crisis"]
+TASKS: List[str] = ["single-triage", "batch-triage", "sla-crisis", "adversarial-triage"]
 
 MAX_STEPS: Dict[str, int] = {
     "single-triage": 5,
     "batch-triage":  32,
     "sla-crisis":    50,
+    "adversarial-triage": 65,
 }
+
+# ---------------------------------------------------------------------------
+# Spam detection keywords for heuristic fallback (Task 4)
+# ---------------------------------------------------------------------------
+
+_SPAM_KEYWORDS = [
+    "quantum", "paradox", "sentient", "sentience", "timeline", "dimension",
+    "april fools", "just kidding", "lol", "prank", "made this up",
+    "never mind", "already resolved", "false alarm", "you can close",
+    "hacked!!", "hackers everywhere", "consciousness", "superposition",
+    "wet_circuits", "qt-paradox", "sentience_achieved", "hacked-123",
+]
+
+_SPAM_PRODUCTS = [
+    "quantum module", "ai chatbot",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +97,9 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     print(f"[STEP] step={step} action={action_safe} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +157,7 @@ Action formats (exactly one per response):
   {"action_type":"request_info","bug_id":"ID","info_requested":["item1","item2"]}
   {"action_type":"mark_duplicate","bug_id":"ID","duplicate_of":"ORIGINAL-ID"}
   {"action_type":"escalate","bug_id":"ID","escalation_reason":"reason"}
+  {"action_type":"flag_spam","bug_id":"ID","spam_reason":"reason"}
   {"action_type":"submit","bug_id":"ID"}
 
 SEVERITY RULES:
@@ -148,12 +167,12 @@ SEVERITY RULES:
   low      = cosmetic, typo, alignment, tooltip wrapping, minor UI issues
 
 TEAM RULES:
-  security       → auth vulnerabilities, token issues, rate limit bypass, session exploits
-  backend        → API errors, payment processing, webhook failures, server crashes, billing, CSV/export bugs
-  frontend       → CSS, UI layout, dark mode, contrast, button alignment, display issues
+  security       → auth vulnerabilities, token issues, rate limit bypass, session exploits, SQL injection
+  backend        → API errors, payment processing, webhook failures, server crashes, billing, CSV/export bugs, GraphQL resolvers
+  frontend       → CSS, UI layout, dark mode, contrast, button alignment, display issues, CORS
   mobile         → iOS/Android app crashes, mobile-specific bugs
   database       → SQL queries, indexing, DB performance, PostgreSQL issues
-  infrastructure → server nodes, cluster outages, primary DB node down, deployment
+  infrastructure → server nodes, cluster outages, primary DB node down, deployment, Redis, CI/CD, connection pools
   qa             → test infrastructure
 
 DUPLICATE RULES:
@@ -164,18 +183,32 @@ ESCALATION RULES:
   - Escalate if: sla_hours_remaining < 2.0
   - Escalate if: enterprise customer + critical or high severity
   - Escalate if: security vulnerability with active exploit
+  - Escalate if: compliance/regulatory risk (GDPR, etc.)
 
 REQUEST_INFO RULES:
   - ONLY when BOTH steps_to_reproduce AND environment_info are completely absent/null
 
-WORKFLOW per bug: classify → assign → (optional: escalate/request_info/mark_duplicate) → submit
-Always classify and assign BEFORE submitting.""")
+SPAM DETECTION RULES (for adversarial-triage task):
+  - Flag as spam if: non-existent products, made-up error codes (QT-PARADOX, SENTIENCE_ACHIEVED, etc.)
+  - Flag as spam if: physically impossible or fantastical descriptions (quantum paradoxes, AI sentience)
+  - Flag as spam if: reporter explicitly admits it's a prank or joke
+  - Flag as spam if: reporter says the issue is already resolved / "never mind"
+  - Flag as spam if: ALL CAPS panic with zero technical substance (loading spinner = hacked)
+  - DO NOT flag as spam: vague but genuine reports (those get request_info instead)
+
+WORKFLOW per bug:
+  For spam: flag_spam → done (do NOT classify/assign/submit spam)
+  For real: classify → assign → (optional: escalate/request_info/mark_duplicate) → submit
+  Always classify and assign BEFORE submitting.
+
+PRIORITY ORDER: Flag spam first, then handle SLA-critical bugs, then the rest.""")
 
 
 def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
     """Build a concise prompt from the observation."""
     unprocessed     = obs.get("unprocessed_bug_ids", [])
     submitted       = obs.get("submitted_bug_ids", [])
+    flagged_spam    = obs.get("flagged_spam_ids", [])
     steps_remaining = obs.get("steps_remaining", 0)
     classifications = obs.get("current_classifications", {})
     assignments     = obs.get("current_assignments", {})
@@ -238,6 +271,7 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
 Step {step_num} | Steps remaining: {steps_remaining}
 Unprocessed ({len(unprocessed)}): {', '.join(unprocessed)}
 Submitted ({len(submitted)}): {', '.join(submitted) if submitted else 'none'}
+Flagged spam ({len(flagged_spam)}): {', '.join(flagged_spam) if flagged_spam else 'none'}
 
 Bugs needing action:
 {''.join(bug_summaries) if bug_summaries else '  All bugs processed.'}
@@ -269,11 +303,37 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _is_spam_heuristic(bug_data: Dict[str, Any]) -> bool:
+    """Keyword-based spam detection for heuristic fallback."""
+    desc = (bug_data.get("description", "") + " " + bug_data.get("title", "")).lower()
+    product = bug_data.get("product", "").lower()
+
+    # Check spam products
+    for sp in _SPAM_PRODUCTS:
+        if sp in product:
+            return True
+
+    # Check spam keywords
+    spam_hits = sum(1 for kw in _SPAM_KEYWORDS if kw in desc)
+    if spam_hits >= 2:
+        return True
+
+    # ALL CAPS check: if >60% of alphabetic chars are uppercase and description is short on tech detail
+    alpha_chars = [c for c in bug_data.get("description", "") if c.isalpha()]
+    if len(alpha_chars) > 50:
+        upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        if upper_ratio > 0.6 and spam_hits >= 1:
+            return True
+
+    return False
+
+
 def _heuristic_action(obs: Dict[str, Any]) -> Dict[str, Any]:
     """Deterministic fallback when LLM fails."""
     unprocessed     = obs.get("unprocessed_bug_ids", [])
     classifications = obs.get("current_classifications", {})
     assignments     = obs.get("current_assignments", {})
+    flagged_spam    = obs.get("flagged_spam_ids", [])
 
     if not unprocessed:
         return {"action_type": "submit", "bug_id": "unknown"}
@@ -284,6 +344,10 @@ def _heuristic_action(obs: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(b, dict) and b.get("id") == bug_id:
             bug_data = b
             break
+
+    # Check for spam first (Task 4)
+    if bug_id not in flagged_spam and _is_spam_heuristic(bug_data):
+        return {"action_type": "flag_spam", "bug_id": bug_id, "spam_reason": "Spam indicators detected"}
 
     if bug_id not in classifications:
         desc = (bug_data.get("description", "") + " " + bug_data.get("title", "")).lower()
@@ -435,7 +499,7 @@ def run_task(
 
     finally:
         # [END] ALWAYS emitted — even on exception (spec requirement)
-        log_end(success=success, steps=steps_taken, score=final_score, rewards=rewards)
+        log_end(success=success, steps=steps_taken, rewards=rewards)
 
     return success, steps_taken, final_score, rewards
 

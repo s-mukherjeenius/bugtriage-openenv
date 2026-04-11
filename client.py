@@ -52,6 +52,8 @@ class BugTriageEnv(EnvClient[BugTriageAction, BugTriageObservation, BugTriageSta
             payload["info_requested"] = action.info_requested
         if action.escalation_reason:
             payload["escalation_reason"] = action.escalation_reason
+        if action.spam_reason:
+            payload["spam_reason"] = action.spam_reason
         return payload
 
     def _parse_result(self, payload: Dict[str, Any]) -> StepResult:

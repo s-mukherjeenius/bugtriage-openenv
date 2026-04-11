@@ -9,11 +9,26 @@ tags:
   - openenv
 ---
 
-# BugTriage OpenEnv
+# 🐛 BugTriage OpenEnv
 
-**An OpenEnv-compliant reinforcement learning environment for software bug triage.**
+**An OpenEnv-compliant reinforcement learning environment for software bug triage — featuring adversarial spam detection, cascading failure chains, and dynamic scenario generation.**
 
-BugTriage simulates the real-world workflow of a triage engineer: classifying severity, routing bugs to teams, detecting duplicates, requesting missing information, escalating critical incidents, and submitting decisions — all within a step budget.
+BugTriage simulates the real-world workflow of a triage engineer: classifying severity, routing bugs to teams, detecting duplicates, requesting missing information, escalating critical incidents, flagging spam reports, and submitting decisions — all within a step budget. It's the only OpenEnv environment that tests an agent's ability to **distinguish signal from noise** in a realistic software engineering context.
+
+---
+
+## Why BugTriage?
+
+Every engineering team triages bugs daily. But real triage isn't just classification — it's a multi-step decision process under time pressure with noisy, incomplete, and sometimes **adversarial** inputs. BugTriage captures this complexity:
+
+- **7 distinct action types** — the richest action space of any OpenEnv environment
+- **4 difficulty tiers** — from single-bug warmup to 20-bug adversarial gauntlet
+- **Continuous reward signal** at every step — not just end-of-episode scoring
+- **Dynamic scenario generation** — unlimited training variety via seed-based generation
+- **Adversarial robustness testing** — agents must detect spam, pranks, and self-resolved tickets
+- **Root-cause chain reasoning** — cascading failures that require connecting upstream incidents
+
+**Who would use this:** Teams building AI copilots for engineering (incident response, support ticket routing, DevOps automation), researchers training LLM agents on multi-step structured-action decision tasks, and teams evaluating LLM reasoning over noisy real-world text.
 
 ---
 
@@ -40,81 +55,59 @@ python rl_train.py
 
 ---
 
-## Environment Description & Motivation
+## Architecture
 
-Software bug triage is a critical daily task at every technology company. When a bug report arrives, a triage engineer must quickly assess its severity, route it to the correct team, detect if it duplicates an existing report, request missing information from the reporter, escalate SLA-critical incidents, and finalize the triage decision — all under time pressure.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        BugTriage OpenEnv                         │
+├─────────────┬───────────────────────┬───────────────────────────┤
+│  Inference  │   RL Training         │   Interactive UI          │
+│  (LLM)      │   (REINFORCE)         │   (Browser)              │
+│  inference.py│   rl_train.py        │   /ui endpoint           │
+├─────────────┴───────────────────────┴───────────────────────────┤
+│                    HTTP API Layer                                │
+│  POST /reset  POST /step  GET /state  POST /grade  GET /tasks   │
+├─────────────────────────────────────────────────────────────────┤
+│                    Environment Core                              │
+│  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌───────────────────┐ │
+│  │ Scenarios│ │ Graders  │ │ Generator │ │ Models (Pydantic) │ │
+│  │ 4 static │ │ 4 graders│ │ 4 dynamic │ │ Action/Obs/State  │ │
+│  │ tasks    │ │ + step   │ │ generators│ │ + Reward          │ │
+│  └──────────┘ └──────────┘ └───────────┘ └───────────────────┘ │
+├─────────────────────────────────────────────────────────────────┤
+│  OpenEnv Compatibility Layer (server/bugtriage_environment.py)  │
+│  Implements Environment interface for openenv-core integration  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-This environment models that exact workflow. An AI agent receives raw bug reports (with titles, descriptions, SLA deadlines, customer tiers, and metadata) and must take a sequence of triage actions. The environment provides rich, continuous reward signals at every step, making it suitable for both LLM-based inference and RL post-training.
+**Key design decisions:**
 
-**Who would use this:** Companies building AI copilots for engineering teams (incident response, support ticket routing, DevOps automation), researchers training LLM agents on multi-step decision tasks with structured action spaces, and teams evaluating LLM reasoning over noisy real-world text.
+1. **Dual server pattern** — `app/server.py` is the standalone FastAPI server; `server/app.py` wraps it for openenv-core's WebSocket protocol. Both share the same environment logic.
+2. **Generic graders** — All graders derive expected answers from `scenario.ground_truth`, not hardcoded bug IDs. Static and dynamically-generated scenarios use the same grading code.
+3. **Seed-based determinism** — `random.Random(seed)` per scenario, fully reproducible. Same seed = same bugs, same ground truth.
+4. **6 policy heads for RL** — Classify, Assign, Info, Escalate, Duplicate, and Spam each have independent REINFORCE networks with separate baselines.
 
 ---
 
-## Dynamic Scenario Generation
+## Tasks
 
-BugTriage supports **seed-based dynamic scenario generation** for unlimited training variety. Instead of training on the same 3 static scenarios, agents can face fresh, structurally valid bug sets on every episode.
+### Task 1: Single Critical Bug Triage (Easy)
+- **1 bug**, max **5 steps**, threshold **0.80**
+- A production-down payment failure. Classify, assign, optionally escalate, submit.
 
-### How it works
+### Task 2: Batch Bug Triage with Duplicate Detection (Medium)
+- **8 bugs**, max **32 steps**, threshold **0.65**
+- Includes 1 duplicate pair, 1 incomplete report, 1 security issue needing escalation.
 
-Pass a `seed` parameter to `/reset` to generate a new scenario:
+### Task 3: SLA Crisis — Mass Bug Surge (Hard)
+- **15 bugs**, max **50 steps**, threshold **0.50**
+- 3 duplicate pairs, 5 SLA-critical bugs, enterprise escalations, 2 incomplete reports, linked bug clusters.
 
-```bash
-# Static scenario (default — same bugs every time, used for evaluation)
-curl -X POST -d '{"task": "batch-triage"}' http://localhost:7860/reset
-
-# Dynamic scenario (seed=42 — fresh bugs, deterministic for that seed)
-curl -X POST -d '{"task": "batch-triage", "seed": 42}' http://localhost:7860/reset
-
-# Different seed = different bugs
-curl -X POST -d '{"task": "batch-triage", "seed": 999}' http://localhost:7860/reset
-```
-
-Same seed + same task always produces identical output (fully deterministic via `random.Random(seed)`).
-
-### What gets generated
-
-The generator (`app/generator.py`) draws from a pool of **30+ realistic bug templates** across 6 engineering teams (backend, frontend, security, database, infrastructure, mobile) and assembles structurally valid scenarios:
-
-| Task | Bugs | Structure |
-|------|------|-----------|
-| Easy | 1 | 1 critical bug, enterprise tier, SLA-critical, needs escalation |
-| Medium | 8 | 1 security escalation + 1 info-incomplete + 1 duplicate pair + 4 varied |
-| Hard | 15 | 3 duplicate pairs + 2 info-incomplete + 5 SLA-critical + varied filler |
-
-Duplicate pairs use semantically similar but differently worded variant descriptions — the agent must recognize the same root cause described by different reporters.
-
-### Using in the Web UI
-
-The interactive UI at `http://localhost:7860/ui` has a **Static / Dynamic** toggle in the left panel. Select Dynamic, enter a seed (or click 🎲 for random), and click Start to play with generated scenarios.
-
-### Using in RL training
-
-`rl_train.py` uses dynamic scenarios by default, generating a unique seed per episode so the agent trains on varied bug distributions:
-
-```bash
-python rl_train.py
-# Interactive menu asks:
-#   [1] single-triage  [2] batch-triage  [3] sla-crisis
-#   Use dynamic scenarios? (y/N)
-#   Number of episodes?
-```
-
-### Python API
-
-```python
-from app.generator import generate_scenario
-
-# Generate a medium scenario with seed 42
-scenario = generate_scenario("batch-triage", seed=42)
-print(len(scenario.bug_reports))  # 8
-print(scenario.ground_truth)       # {bug_id: BugGroundTruth, ...}
-
-# Use via the environment
-from app.env import BugTriageEnv
-env = BugTriageEnv("batch-triage")
-result = env.reset(seed=42)  # dynamic bugs
-result = env.reset()          # static bugs (default)
-```
+### Task 4: Adversarial Triage — Spam Detection + Cascading Failures (Expert)
+- **20 bugs** (15 real + 5 spam/fake), max **65 steps**, threshold **0.45**
+- Agents must identify and flag spam reports (quantum paradoxes, admitted pranks, self-resolved tickets, all-caps panic with no substance) while triaging real bugs that include 2 duplicate pairs, cascading root-cause chains (e.g. Redis pool exhaustion → stale search cache), SLA-critical escalations, and incomplete reports.
+- **New `flag_spam` action** — correctly flagging spam saves steps and earns +0.20 reward; falsely flagging real bugs incurs -0.15 penalty.
+- **Spam detection scoring** (20% of episode grade) rewards precision: correctly flagging fakes while never mislabeling legitimate reports.
 
 ---
 
@@ -129,6 +122,7 @@ The agent submits one action per step as a JSON object:
 | `request_info`   | `bug_id`, `info_requested`               | Ask for missing details              |
 | `mark_duplicate` | `bug_id`, `duplicate_of`                 | Mark as duplicate of original        |
 | `escalate`       | `bug_id`, `escalation_reason`            | Escalate to leadership               |
+| `flag_spam`      | `bug_id`, `spam_reason`                  | Flag as spam/fake (Task 4)           |
 | `submit`         | `bug_id`                                 | Finalize triage                      |
 
 **Severity levels:** critical, high, medium, low
@@ -146,7 +140,8 @@ Each step returns a `BugTriageObservation` containing:
 - `current_assignments` — Map of bug_id → team assigned so far
 - `duplicate_map` — Map of bug_id → original_id for marked duplicates
 - `escalated_bug_ids` — List of escalated bugs
-- `unprocessed_bug_ids` — Bugs not yet submitted
+- `flagged_spam_ids` — Bug IDs flagged as spam (Task 4)
+- `unprocessed_bug_ids` — Bugs not yet submitted or flagged
 - `submitted_bug_ids` — Finalized bugs
 - `action_history` — Sequence of past actions and their rewards
 - `steps_remaining` — Steps left before episode truncation
@@ -165,34 +160,70 @@ Each step returns a `BugTriageObservation` containing:
 | Mark duplicate       | +0.18    | —        | -0.12    |
 | Escalate             | +0.12    | —        | -0.05    |
 | Request info         | +0.10    | —        | -0.05    |
+| Flag spam (correct)  | +0.20    | —        | -0.15    |
 | Submit (complete)    | +0.08    | +0.02    | -0.08    |
 
 **Episode-level grading** returns a score in [0.0, 1.0] with weighted components:
 
-| Component             | Task 1 | Task 2 | Task 3 |
-|-----------------------|--------|--------|--------|
-| Severity accuracy     | 40%    | 30%    | 25%    |
-| Team accuracy         | 30%    | 25%    | 20%    |
-| Duplicate detection   | —      | 20%    | 20%    |
-| Escalation            | 10%    | 10%    | 20%    |
-| Info request quality  | 15%    | 10%    | 10%    |
-| Efficiency            | 5%     | 5%     | 5%     |
+| Component             | Task 1 | Task 2 | Task 3 | Task 4 |
+|-----------------------|--------|--------|--------|--------|
+| Spam detection        | —      | —      | —      | 20%    |
+| Severity accuracy     | 40%    | 30%    | 25%    | 20%    |
+| Team accuracy         | 30%    | 25%    | 20%    | 15%    |
+| Duplicate detection   | —      | 20%    | 20%    | 15%    |
+| SLA/Security escalation| 10%   | 10%    | 20%    | 15%    |
+| Info request quality  | 15%    | 10%    | 10%    | 10%    |
+| Efficiency            | 5%     | 5%     | 5%     | 5%     |
 
 ---
 
-## Tasks
+## Dynamic Scenario Generation
 
-### Task 1: Single Critical Bug Triage (Easy)
-- **1 bug**, max **5 steps**, threshold **0.80**
-- A production-down payment failure. Classify, assign, optionally escalate, submit.
+BugTriage supports **seed-based dynamic scenario generation** for unlimited training variety across all 4 tasks.
 
-### Task 2: Batch Bug Triage with Duplicate Detection (Medium)
-- **8 bugs**, max **32 steps**, threshold **0.65**
-- Includes 1 duplicate pair, 1 incomplete report, 1 security issue needing escalation.
+### How it works
 
-### Task 3: SLA Crisis — Mass Bug Surge (Hard)
-- **15 bugs**, max **50 steps**, threshold **0.50**
-- 3 duplicate pairs, 5 SLA-critical bugs, enterprise escalations, 2 incomplete reports, linked bug clusters.
+Pass a `seed` parameter to `/reset` to generate a new scenario:
+
+```bash
+# Static scenario (default — same bugs every time, used for evaluation)
+curl -X POST -d '{"task": "batch-triage"}' http://localhost:7860/reset
+
+# Dynamic scenario (seed=42 — fresh bugs, deterministic for that seed)
+curl -X POST -d '{"task": "batch-triage", "seed": 42}' http://localhost:7860/reset
+
+# Adversarial task with dynamic generation
+curl -X POST -d '{"task": "adversarial-triage", "seed": 42}' http://localhost:7860/reset
+```
+
+Same seed + same task always produces identical output (fully deterministic via `random.Random(seed)`).
+
+### What gets generated
+
+The generator (`app/generator.py`) draws from pools of **30+ realistic bug templates** and **7 spam templates** across 6 engineering teams and assembles structurally valid scenarios:
+
+| Task     | Bugs | Structure |
+|----------|------|-----------|
+| Easy     | 1    | 1 critical bug, enterprise tier, SLA-critical, needs escalation |
+| Medium   | 8    | 1 security escalation + 1 info-incomplete + 1 duplicate pair + 4 varied |
+| Hard     | 15   | 3 duplicate pairs + 2 info-incomplete + 5 SLA-critical + varied filler |
+| Expert   | 20   | 5 spam + 2 duplicate pairs + 2 info-incomplete + 4 SLA-critical + varied real bugs |
+
+### Using in the Web UI
+
+The interactive UI at `http://localhost:7860/ui` has a **Static / Dynamic** toggle. Select Dynamic, enter a seed (or click 🎲 for random), and start playing.
+
+### Python API
+
+```python
+from app.generator import generate_scenario
+
+# Generate an expert scenario with seed 42
+scenario = generate_scenario("adversarial-triage", seed=42)
+print(len(scenario.bug_reports))  # 20
+spam_count = sum(1 for g in scenario.ground_truth.values() if g.is_spam)
+print(f"Spam bugs: {spam_count}")  # 5
+```
 
 ---
 
@@ -200,13 +231,14 @@ Each step returns a `BugTriageObservation` containing:
 
 Baseline scores from `inference.py` using `Qwen/Qwen2.5-72B-Instruct` via HuggingFace Router:
 
-| Task            | Difficulty | Score  | Threshold | Status |
-|-----------------|-----------|--------|-----------|--------|
-| single-triage   | Easy      | ~0.85  | 0.80      | Pass   |
-| batch-triage    | Medium    | ~0.55  | 0.65      | Near   |
-| sla-crisis      | Hard      | ~0.35  | 0.50      | Challenging |
+| Task                | Difficulty | Score  | Threshold | Status |
+|---------------------|-----------|--------|-----------|--------|
+| single-triage       | Easy      | ~0.85  | 0.80      | Pass   |
+| batch-triage        | Medium    | ~0.55  | 0.65      | Near   |
+| sla-crisis          | Hard      | ~0.35  | 0.50      | Challenging |
+| adversarial-triage  | Expert    | ~0.30  | 0.45      | Very Challenging |
 
-The hard task (sla-crisis) is designed to genuinely challenge frontier models. Perfect score requires correctly handling 3 duplicate pairs across 15 bugs, prioritizing SLA-critical escalations, detecting incomplete reports, and managing a tight 50-step budget.
+The expert task (adversarial-triage) is designed to genuinely challenge frontier models. Perfect score requires correctly identifying 5 spam reports, handling 2 duplicate pairs across 20 bugs, prioritizing SLA-critical escalations, detecting incomplete reports, recognizing root-cause chains, and managing a 65-step budget efficiently.
 
 ---
 
@@ -225,7 +257,7 @@ The hard task (sla-crisis) is designed to genuinely challenge frontier models. P
 
 ## RL Training Demo
 
-The included `rl_train.py` demonstrates that the environment produces learnable reward signals. It features an interactive startup menu:
+The included `rl_train.py` demonstrates that the environment produces learnable reward signals. It features 6 independent policy heads and an interactive startup menu:
 
 ```bash
 # Start server
@@ -234,17 +266,18 @@ uvicorn app.server:app --port 7860
 # Launch training with interactive menu
 python rl_train.py
 #   Select a task to train on:
-#   [1] single-triage  (Easy  — 1 bug,  5 steps)
-#   [2] batch-triage   (Medium — 8 bugs, 32 steps)
-#   [3] sla-crisis     (Hard  — 15 bugs, 50 steps)
+#   [1] single-triage       (Easy   — 1 bug,  5 steps)
+#   [2] batch-triage        (Medium — 8 bugs, 32 steps)
+#   [3] sla-crisis          (Hard   — 15 bugs, 50 steps)
+#   [4] adversarial-triage  (Expert — 20 bugs, 65 steps)
 #   Use dynamic scenarios? (y/N): y
-#   Number of episodes? (default=800): 1000
+#   Number of episodes?
 
 # Or use environment variables for non-interactive mode
-RL_TASK=sla-crisis RL_DYNAMIC=true RL_EPISODES=1200 python rl_train.py
+RL_TASK=adversarial-triage RL_DYNAMIC=true RL_EPISODES=1200 python rl_train.py
 ```
 
-Architecture: 5 policy heads (classify, assign, info, escalate, duplicate) trained independently via REINFORCE with baseline. Uses Jaccard text similarity for duplicate target selection — no hardcoded answers. Dynamic mode generates a unique scenario per episode for maximum training diversity.
+Architecture: 6 policy heads (classify, assign, info, escalate, duplicate, **spam**) trained independently via REINFORCE with baseline. For adversarial-triage, the spam head runs first (Phase 0), filtering out fakes before the classify/assign/escalate phases operate on real bugs only.
 
 ---
 
@@ -254,27 +287,27 @@ Architecture: 5 policy heads (classify, assign, info, escalate, duplicate) train
 bugtriage-openenv/
 ├── app/
 │   ├── env.py              # Core environment: reset(seed=None), step(), grade()
-│   ├── generator.py        # Dynamic scenario generator (30+ bug templates)
-│   ├── graders.py          # Generic step + episode graders (no hardcoded IDs)
-│   ├── models.py           # Pydantic: Action, Observation, Reward, State
-│   ├── scenarios.py        # Static bug reports + ground truth (3 tasks)
+│   ├── generator.py        # Dynamic scenario generator (30+ bug + 7 spam templates)
+│   ├── graders.py          # Generic step + episode graders (4 tasks, no hardcoded IDs)
+│   ├── models.py           # Pydantic: Action (7 types), Observation, Reward, State
+│   ├── scenarios.py        # Static bug reports + ground truth (4 tasks, 44 bugs)
 │   ├── server.py           # FastAPI HTTP server (supports seed in /reset)
-│   └── ui.html             # Interactive web UI (Static/Dynamic toggle)
+│   └── ui.html             # Interactive web UI (Static/Dynamic toggle, 4 tasks)
 ├── server/
 │   ├── app.py              # OpenEnv-wrapped server (seed passthrough)
-│   └── bugtriage_environment.py  # openenv Environment (seed support)
-├── models.py               # Root models (openenv-core typed)
+│   └── bugtriage_environment.py  # openenv Environment (seed + spam support)
+├── models.py               # Root models (openenv-core typed, FLAG_SPAM action)
 ├── client.py               # openenv EnvClient for training code
-├── inference.py            # LLM baseline inference script
-├── rl_train.py             # RL training (interactive menu + dynamic seeds)
-├── openenv.yaml            # OpenEnv spec manifest
+├── inference.py            # LLM baseline inference (4 tasks + spam heuristic)
+├── rl_train.py             # RL training (6 policy heads, spam phase, interactive)
+├── openenv.yaml            # OpenEnv spec manifest (4 tasks)
 ├── Dockerfile              # Multi-stage Docker build
 ├── requirements.txt        # Runtime dependencies
 ├── pyproject.toml          # Project metadata
-└── tests/                  # Comprehensive test suite (28 seed tests)
-    ├── test_env.py         # Environment logic tests
-    ├── test_graders.py     # Grader + generator tests (20 generator tests)
-    └── test_api.py         # HTTP API + dynamic scenario tests
+└── tests/                  # Comprehensive test suite (150+ tests)
+    ├── test_env.py         # Environment logic + Task 4 spam tests
+    ├── test_graders.py     # Grader + generator tests (expert generator tests)
+    └── test_api.py         # HTTP API + Task 4 endpoint tests
 ```
 
 ---
@@ -318,7 +351,8 @@ curl -X POST -H "Content-Type: application/json" -d '{}' http://localhost:7860/r
 ```bash
 pip install pytest
 pytest tests/ -v
-# Runs 114+ tests including 28 dynamic scenario generation tests
+# Runs 150+ tests including Task 4 spam detection, adversarial grading,
+# and dynamic expert scenario generation tests
 ```
 
 ---

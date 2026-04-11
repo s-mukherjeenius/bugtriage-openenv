@@ -32,3 +32,10 @@ tasks:
     max_steps: 50
     reward_threshold: 0.50
     description: "15 simultaneous bugs: 3 duplicate pairs, 5 SLA breaches, enterprise escalations."
+
+  - id: adversarial-triage
+    name: "Adversarial Triage: Spam Detection + Cascading Failures"
+    difficulty: expert
+    max_steps: 65
+    reward_threshold: 0.45
+    description: "20 bugs with 5 spam/fakes, duplicate pairs, root-cause chains, and SLA escalations. Agent must detect spam and triage real bugs under step pressure."

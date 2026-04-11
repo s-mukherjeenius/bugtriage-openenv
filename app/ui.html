@@ -48,6 +48,7 @@
   .pill-easy   { background: #14532d; color: var(--green); }
   .pill-medium { background: #713f12; color: var(--yellow); }
   .pill-hard   { background: #7f1d1d; color: var(--red); }
+  .pill-expert { background: #4c1d95; color: #c4b5fd; }
   .pill-steps  { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
 
   .start-btn { width: 100%; padding: 10px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); font-size: 13px; font-weight: 700; cursor: pointer; letter-spacing: .3px; transition: opacity .15s; }
@@ -72,6 +73,7 @@
   .bug-card.selected { border-color: var(--accent); background: #1a1d35; }
   .bug-card.submitted { opacity: .45; border-color: var(--green); }
   .bug-card.duplicate { opacity: .55; border-color: var(--yellow); }
+  .bug-card.spam { opacity: .35; border-color: var(--accent2); }
   .bug-id { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .bug-title { font-size: 13px; font-weight: 600; margin: 3px 0 6px; }
   .bug-meta { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -195,6 +197,13 @@
             <span class="pill pill-steps">50 steps · 15 bugs</span>
           </div>
         </button>
+        <button class="task-btn" data-task="adversarial-triage" onclick="selectTask(this)">
+          <div class="task-name">Adversarial Triage: Spam + Cascading</div>
+          <div class="task-meta">
+            <span class="pill" style="background:#4c1d95;color:#c4b5fd">Expert</span>
+            <span class="pill pill-steps">65 steps · 20 bugs</span>
+          </div>
+        </button>
       </div>
 
       <!-- Scenario mode toggle -->
@@ -290,6 +299,7 @@
               <button class="qa-btn"        data-type="request_info"   onclick="setActionType(this)">Request Info</button>
               <button class="qa-btn"        data-type="mark_duplicate" onclick="setActionType(this)">Mark Duplicate</button>
               <button class="qa-btn"        data-type="escalate"       onclick="setActionType(this)">Escalate</button>
+              <button class="qa-btn"        data-type="flag_spam"      onclick="setActionType(this)">Flag Spam</button>
               <button class="qa-btn"        data-type="submit"         onclick="setActionType(this)">Submit</button>
             </div>
           </div>
@@ -340,6 +350,11 @@
           <div id="field-escalation" class="form-group" style="display:none">
             <label>Escalation Reason</label>
             <input type="text" id="action-escalation" placeholder="e.g. SLA breach, security vulnerability"/>
+          </div>
+
+          <div id="field-spam" class="form-group" style="display:none">
+            <label>Spam Reason</label>
+            <input type="text" id="action-spam-reason" placeholder="e.g. fake product, prank, self-resolved"/>
           </div>
 
           <button class="action-btn action-btn-primary" id="submit-action-btn" onclick="submitAction()" disabled>
@@ -479,6 +494,7 @@ function updateDynamicFields() {
   document.getElementById('field-duplicate').style.display = t === 'mark_duplicate' ? 'block' : 'none';
   document.getElementById('field-info').style.display      = t === 'request_info'   ? 'block' : 'none';
   document.getElementById('field-escalation').style.display= t === 'escalate'       ? 'block' : 'none';
+  document.getElementById('field-spam').style.display      = t === 'flag_spam'      ? 'block' : 'none';
   checkSubmitEnabled();
 }
 
@@ -521,6 +537,7 @@ async function submitAction() {
   if (state.actionType === 'mark_duplicate') action.duplicate_of   = document.getElementById('action-duplicate').value;
   if (state.actionType === 'request_info')   action.info_requested = document.getElementById('action-info').value.split(',').map(s=>s.trim()).filter(Boolean);
   if (state.actionType === 'escalate')       action.escalation_reason = document.getElementById('action-escalation').value || 'Escalation required';
+  if (state.actionType === 'flag_spam')      action.spam_reason       = document.getElementById('action-spam-reason').value || 'Spam detected';
 
   const btn = document.getElementById('submit-action-btn');
   btn.disabled = true; btn.textContent = 'Executing…';
@@ -677,8 +694,9 @@ function renderBugCards(obs) {
 
   bugs.forEach(bug => {
     const submitted  = obs.submitted_bug_ids.includes(bug.id);
+    const isFlaggedSpam = (obs.flagged_spam_ids || []).includes(bug.id);
     const isDuplicate= !!obs.duplicate_map[bug.id];
-    if (!state.showAll && submitted) return;
+    if (!state.showAll && (submitted || isFlaggedSpam)) return;
 
     const sev   = obs.current_classifications[bug.id];
     const team  = obs.current_assignments[bug.id];
@@ -689,7 +707,7 @@ function renderBugCards(obs) {
     const slaClass = sla != null ? (sla < 2 ? 'sla-urgent' : sla < 6 ? 'sla-warn' : '') : '';
 
     const selected = state.selectedBugId === bug.id;
-    const cls = ['bug-card', selected?'selected':'', submitted?'submitted':'', isDuplicate?'duplicate':''].join(' ');
+    const cls = ['bug-card', selected?'selected':'', submitted?'submitted':'', isFlaggedSpam?'spam':'', isDuplicate?'duplicate':''].join(' ');
 
     const div = document.createElement('div');
     div.className = cls;
@@ -700,6 +718,7 @@ function renderBugCards(obs) {
     div.innerHTML = `
       <div class="bug-status">
         ${submitted  ? '<span class="pill done-badge">✓ Submitted</span>' : ''}
+        ${isFlaggedSpam ? '<span class="pill" style="background:#4c1d1d;color:#fca5a5;font-size:9px">🚫 Spam</span>' : ''}
         ${esc        ? '<span class="pill esc-badge">↑ Escalated</span>' : ''}
         ${info       ? '<span class="pill info-badge">? Info Req</span>' : ''}
         ${dup        ? `<span class="pill dup-badge">≡ Dup of ${dup}</span>` : ''}
@@ -754,6 +773,7 @@ function formatActionLabel(a) {
     case 'request_info':   return `Request Info`;
     case 'mark_duplicate': return `Duplicate of ${a.duplicate_of}`;
     case 'escalate':       return `Escalate`;
+    case 'flag_spam':      return `🚫 Flag Spam`;
     case 'submit':         return `✓ Submit`;
     default: return a.action_type;
   }

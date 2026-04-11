@@ -25,6 +25,8 @@ class BugGroundTruth:
     is_duplicate_of: Optional[str] = None  # ID of the original bug if this is a dup
     should_escalate: bool = False           # True → escalation is expected / rewarded
     sla_critical: bool = False              # True → sla_hours_remaining < 2.0
+    is_spam: bool = False                   # True → fake/spam report (Task 4)
+    root_cause_chain: Optional[str] = None  # ID of root-cause bug (Task 4)
 
 
 @dataclass
@@ -781,6 +783,528 @@ SCENARIO_TASK3 = TaskScenario(
 )
 
 
+# ===========================================================================
+# TASK 4 — adversarial-triage  (EXPERT)
+# ===========================================================================
+# 20 bug reports: 15 real + 5 spam/fake.
+# Spam reports look plausible but contain red flags: vague descriptions,
+# contradictory info, non-existent products, or fabricated error codes.
+#
+# Real bugs include:
+#   • 2 duplicate pairs (ADV-003 is dup of ADV-001, ADV-015 is dup of ADV-010)
+#   • 4 SLA-critical bugs requiring escalation
+#   • 2 info-incomplete bugs
+#   • 2 root-cause chains (ADV-006 is root cause of ADV-009)
+#
+# Max steps: 65   Reward threshold: 0.45
+# ===========================================================================
+
+_T4_BUGS: List[BugReport] = [
+    # ── Real bugs ──────────────────────────────────────────────────────────
+    BugReport(
+        id="ADV-001",
+        title="OAuth token refresh loop causing 100% CPU on auth-service pods",
+        description=(
+            "Auth-service pods are stuck in a token refresh loop since 03:00 UTC. "
+            "The /oauth/refresh endpoint is being called 4,000 times per second by "
+            "the frontend retry logic. CPU is pegged at 100% across all 8 pods. "
+            "Root cause appears to be the refresh endpoint returning 200 OK with an "
+            "already-expired token, causing the client to immediately retry. "
+            "Enterprise SSO customers are unable to log in. Active incident."
+        ),
+        reporter="sre_oncall@company.com",
+        timestamp="2024-04-01T03:15:00Z",
+        product="Auth Service",
+        version="v6.1.0",
+        steps_to_reproduce="1. Trigger token refresh\n2. Observe: returned token already expired\n3. Client retries immediately\n4. CPU 100%",
+        expected_behavior="Fresh token returned with valid TTL",
+        actual_behavior="Expired token returned, infinite retry loop",
+        environment_info={"cluster": "prod-us-east", "pods": "8/8 affected"},
+        customer_tier="enterprise",
+        sla_hours_remaining=0.5,
+        linked_bug_ids=["ADV-003"],
+    ),
+    BugReport(
+        id="ADV-002",
+        title="Scheduled report emails sending duplicate attachments",
+        description=(
+            "Customers receiving their weekly scheduled reports are getting each "
+            "CSV attachment duplicated 3x in the email. The report content is correct "
+            "but the attachment logic in EmailService.buildMultipart() is iterating "
+            "over the attachment list three times due to a triple-nested loop bug "
+            "introduced in v4.2.0. Affects all business-tier customers with scheduled reports."
+        ),
+        reporter="support_escalation@company.com",
+        timestamp="2024-04-01T08:00:00Z",
+        product="Reports Service",
+        version="v4.2.0",
+        steps_to_reproduce="1. Set up a weekly scheduled report\n2. Wait for delivery\n3. Check email attachments\n4. Observe 3x duplicate CSVs",
+        expected_behavior="One attachment per report",
+        actual_behavior="Three identical attachments per email",
+        environment_info={"service": "email-service", "queue": "report-mailer"},
+        customer_tier="business",
+        sla_hours_remaining=10.0,
+    ),
+    BugReport(
+        id="ADV-003",
+        title="Login failures across all SSO-enabled enterprise accounts",
+        description=(
+            "Multiple enterprise customers reporting they cannot log in via SSO. "
+            "Error message: 'Authentication service temporarily unavailable'. "
+            "Our monitoring shows the auth service is responding but returning "
+            "invalid tokens. This started around 03:00 UTC — seems related to "
+            "a token handling issue. Affecting all enterprise SSO integrations."
+        ),
+        reporter="enterprise_success@company.com",
+        timestamp="2024-04-01T04:30:00Z",  # LATER than ADV-001 → DUPLICATE
+        product="Auth Service",
+        version="v6.1.0",
+        steps_to_reproduce="1. Attempt SSO login as enterprise user\n2. Get 'service unavailable' error",
+        expected_behavior="SSO login succeeds",
+        actual_behavior="'Authentication service temporarily unavailable' error",
+        environment_info={"sso_provider": "Okta", "region": "us-east-1"},
+        customer_tier="enterprise",
+        sla_hours_remaining=0.5,
+        linked_bug_ids=["ADV-001"],
+    ),
+    BugReport(
+        id="ADV-004",
+        title="GraphQL API returning null for nested user.preferences field",
+        description=(
+            "The GraphQL endpoint /api/graphql returns null for the user.preferences "
+            "field when the query includes nested fragments. The REST API returns the "
+            "correct data. This is a resolver issue — the PreferencesResolver is not "
+            "being invoked when accessed through a fragment spread. Affects any client "
+            "using the GraphQL API with preference queries."
+        ),
+        reporter="api_team@company.com",
+        timestamp="2024-04-01T09:00:00Z",
+        product="GraphQL Gateway",
+        version="v2.5.0",
+        steps_to_reproduce="1. Query user { ...PrefsFragment }\n2. Observe: preferences is null\n3. Same query via REST returns data",
+        expected_behavior="Preferences data resolved correctly",
+        actual_behavior="null returned for preferences in fragment spreads",
+        environment_info={"endpoint": "api.company.com/graphql"},
+        customer_tier="business",
+        sla_hours_remaining=8.0,
+    ),
+    BugReport(
+        id="ADV-005",
+        title="Mobile app crashes intermittently — no clear pattern",
+        description=(
+            "Our mobile app keeps crashing for some users. No consistent pattern "
+            "or reproduction steps known. Crash reports show different stack traces "
+            "each time. Users just say 'it crashes randomly'. No version or device "
+            "info collected yet."
+        ),
+        reporter="mobile_support@company.com",
+        timestamp="2024-04-01T10:00:00Z",
+        product="Mobile App",
+        version="unknown",
+        steps_to_reproduce=None,  # MISSING
+        expected_behavior=None,
+        actual_behavior="Random crashes with varying stack traces",
+        environment_info=None,  # MISSING
+        customer_tier="starter",
+        sla_hours_remaining=None,
+    ),
+    BugReport(
+        id="ADV-006",
+        title="Redis connection pool exhausted — all cache reads failing",
+        description=(
+            "The Redis connection pool hit its 200-connection limit at 02:45 UTC. "
+            "All cache reads are timing out after 5 seconds, causing cascading "
+            "failures in every service that depends on the cache layer. Root cause: "
+            "a background analytics job opened 180 connections and never released "
+            "them. This is the ROOT CAUSE of the downstream service degradation "
+            "reported in ADV-009."
+        ),
+        reporter="infra_alerts@company.com",
+        timestamp="2024-04-01T02:50:00Z",
+        product="Cache Infrastructure",
+        version="Redis 7.2",
+        steps_to_reproduce="1. Check Redis connection pool status\n2. Observe: 200/200 connections used\n3. All new connections rejected",
+        expected_behavior="Pool has available connections",
+        actual_behavior="Pool exhausted, all reads timing out",
+        environment_info={"service": "redis-cluster-prod", "pool_size": "200"},
+        customer_tier="enterprise",
+        sla_hours_remaining=1.0,
+        linked_bug_ids=["ADV-009"],
+    ),
+    BugReport(
+        id="ADV-007",
+        title="CORS headers missing on new /api/v3/ endpoints",
+        description=(
+            "The recently deployed v3 API endpoints are missing CORS headers, "
+            "causing all browser-based clients to fail with 'blocked by CORS policy' "
+            "errors. The nginx config for /api/v3/* was not updated to include "
+            "Access-Control-Allow-Origin. Affects all frontend applications making "
+            "cross-origin requests to the new endpoints."
+        ),
+        reporter="frontend_lead@company.com",
+        timestamp="2024-04-01T11:00:00Z",
+        product="API Gateway",
+        version="v3.0.0",
+        steps_to_reproduce="1. From browser, fetch /api/v3/users\n2. Check console\n3. 'blocked by CORS policy' error",
+        expected_behavior="CORS headers present on v3 endpoints",
+        actual_behavior="No CORS headers, all browser requests blocked",
+        environment_info={"proxy": "nginx 1.25", "region": "us-east-1"},
+        customer_tier="business",
+        sla_hours_remaining=6.0,
+    ),
+    BugReport(
+        id="ADV-008",
+        title="Stripe webhook signature verification failing after key rotation",
+        description=(
+            "After rotating the Stripe webhook signing secret yesterday, all incoming "
+            "webhooks are failing signature verification with 'Invalid signature'. "
+            "The new secret was deployed to staging but NOT to production. Payment "
+            "event processing is completely stalled — ~2,400 events queued and growing. "
+            "Enterprise billing cycle runs tonight."
+        ),
+        reporter="billing_oncall@company.com",
+        timestamp="2024-04-01T05:00:00Z",
+        product="Billing Service",
+        version="v3.8.1",
+        steps_to_reproduce="1. Trigger any Stripe webhook\n2. Check logs: 'Invalid signature'\n3. Events accumulating in dead letter queue",
+        expected_behavior="Webhook signature validates, events processed",
+        actual_behavior="All webhooks rejected with 'Invalid signature'",
+        environment_info={"service": "webhook-processor", "queue_depth": "2400+"},
+        customer_tier="enterprise",
+        sla_hours_remaining=1.5,
+    ),
+    BugReport(
+        id="ADV-009",
+        title="Product search returning stale results — cache not updating",
+        description=(
+            "Product search results are showing prices and descriptions from 3 hours "
+            "ago. The Elasticsearch index is current but the Redis cache layer is "
+            "serving stale data. Cache invalidation seems to be failing silently. "
+            "This started around 03:00 UTC — likely related to the infrastructure "
+            "cache issues."
+        ),
+        reporter="ecommerce_team@company.com",
+        timestamp="2024-04-01T06:00:00Z",
+        product="Search Service",
+        version="v5.1.0",
+        steps_to_reproduce="1. Update a product price\n2. Search for the product\n3. Old price displayed",
+        expected_behavior="Search shows current data",
+        actual_behavior="Stale data from 3+ hours ago",
+        environment_info={"cache": "redis-cluster-prod", "index": "es-products"},
+        customer_tier="business",
+        sla_hours_remaining=4.0,
+        linked_bug_ids=["ADV-006"],
+    ),
+    BugReport(
+        id="ADV-010",
+        title="Dark mode CSS variables not loading in Safari — text invisible",
+        description=(
+            "Safari 17+ on macOS fails to load the dark mode CSS custom properties "
+            "from our design token stylesheet. All text renders as #1a1a1a on #1e1e2e "
+            "background (contrast ratio 1.1:1). The issue is that Safari doesn't support "
+            "the @property CSS rule we use for color-scheme-aware tokens. Affects 18% of "
+            "our macOS user base."
+        ),
+        reporter="design_system@company.com",
+        timestamp="2024-04-01T07:00:00Z",  # EARLIER → ORIGINAL
+        product="Web App",
+        version="v4.0.0",
+        steps_to_reproduce="1. Open app in Safari 17 on macOS\n2. Enable dark mode\n3. Text nearly invisible",
+        expected_behavior="Readable text with ≥4.5:1 contrast",
+        actual_behavior="Text invisible, contrast ~1.1:1",
+        environment_info={"browser": "Safari 17.2", "os": "macOS Sonoma 14.3"},
+        customer_tier="starter",
+        sla_hours_remaining=None,
+    ),
+    BugReport(
+        id="ADV-011",
+        title="CI/CD pipeline deploying wrong Docker tag to production",
+        description=(
+            "The deployment pipeline is tagging builds with the short SHA instead of "
+            "the release tag. Production is running commit abc123f instead of the "
+            "intended release v4.0.1. The Dockerfile ARG propagation was broken in "
+            "the recent CI config refactor. Need to rollback and fix."
+        ),
+        reporter="devops@company.com",
+        timestamp="2024-04-01T12:00:00Z",
+        product="CI/CD Pipeline",
+        version="v2.0.0",
+        steps_to_reproduce="1. Check production pod image tag\n2. Compare with release tag\n3. Mismatch confirmed",
+        expected_behavior="Production runs release-tagged image",
+        actual_behavior="Production running commit-SHA-tagged image",
+        environment_info={"ci": "GitHub Actions", "registry": "ghcr.io"},
+        customer_tier="business",
+        sla_hours_remaining=3.0,
+    ),
+    BugReport(
+        id="ADV-012",
+        title="User data export missing GDPR-required fields",
+        description=(
+            "The GDPR data export (Settings > Privacy > Export My Data) is missing "
+            "three required categories: login_history, third_party_data_shares, and "
+            "consent_records. These were accidentally excluded when the export job "
+            "was migrated to the new data pipeline. This is a compliance issue that "
+            "could result in regulatory fines if not fixed before the next audit."
+        ),
+        reporter="legal_compliance@company.com",
+        timestamp="2024-04-01T09:30:00Z",
+        product="Data Pipeline",
+        version="v2.3.0",
+        steps_to_reproduce="1. Request GDPR export\n2. Check exported archive\n3. Missing: login_history, third_party_data_shares, consent_records",
+        expected_behavior="All GDPR-mandated categories included",
+        actual_behavior="Three required data categories missing",
+        environment_info={"pipeline": "data-export-v2"},
+        customer_tier="enterprise",
+        sla_hours_remaining=2.0,
+    ),
+    BugReport(
+        id="ADV-013",
+        title="Something broke I think — app feels slow",
+        description=(
+            "I'm not sure what's wrong but the app feels slower than before. "
+            "It might be my internet though. Sometimes pages load fast, sometimes "
+            "not. I don't know what version I'm on. Maybe try restarting?"
+        ),
+        reporter="random_user_456@gmail.com",
+        timestamp="2024-04-01T13:00:00Z",
+        product="Web App",
+        version="unknown",
+        steps_to_reproduce=None,  # MISSING
+        expected_behavior=None,
+        actual_behavior="Intermittent slowness",
+        environment_info=None,  # MISSING
+        customer_tier="free",
+        sla_hours_remaining=None,
+    ),
+    BugReport(
+        id="ADV-014",
+        title="SQL injection in admin user search — active exploitation detected",
+        description=(
+            "WAF logs show repeated SQL injection attempts on /admin/users/search?q= "
+            "that are SUCCEEDING. The admin search endpoint uses raw string "
+            "concatenation: `WHERE name LIKE '%" + query + "%'`. An attacker is "
+            "extracting the admin_sessions table. We have confirmed data exfiltration "
+            "of 47 active admin session tokens in the last 30 minutes. This is a "
+            "P0 security breach."
+        ),
+        reporter="security_ir@company.com",
+        timestamp="2024-04-01T01:00:00Z",
+        product="Admin Panel",
+        version="v3.2.0",
+        steps_to_reproduce="1. GET /admin/users/search?q=' UNION SELECT token FROM admin_sessions --\n2. Admin session tokens returned in response",
+        expected_behavior="Parameterized query, no injection possible",
+        actual_behavior="SQL injection succeeds, data exfiltrated",
+        environment_info={"waf": "cloudflare", "db": "PostgreSQL 15"},
+        customer_tier="enterprise",
+        sla_hours_remaining=0.2,
+    ),
+    BugReport(
+        id="ADV-015",
+        title="Dark mode broken in Safari on Mac — unreadable text",
+        description=(
+            "After enabling dark mode, all text becomes nearly invisible in Safari. "
+            "The background is dark but text color doesn't change. Chrome works fine. "
+            "Multiple users have reported this. Seems like a CSS compatibility issue "
+            "with Safari's rendering engine."
+        ),
+        reporter="ux_feedback@company.com",
+        timestamp="2024-04-01T11:30:00Z",  # LATER than ADV-010 → DUPLICATE
+        product="Web App",
+        version="v4.0.0",
+        steps_to_reproduce="1. Use Safari on macOS\n2. Toggle dark mode\n3. Text disappears",
+        expected_behavior="Text readable in dark mode",
+        actual_behavior="Text nearly invisible on dark background",
+        environment_info={"browser": "Safari 17", "os": "macOS Sonoma"},
+        customer_tier="free",
+        sla_hours_remaining=None,
+    ),
+    # ── SPAM / FAKE reports ──────────────────────────────────────────────────
+    BugReport(
+        id="ADV-016",
+        title="URGENT: Quantum computing module causing timeline paradoxes",
+        description=(
+            "Our quantum computing integration is causing temporal anomalies in the "
+            "database. Records are appearing with timestamps from the future (year 2087). "
+            "The entanglement resolver is creating superposition states in the user table. "
+            "IMMEDIATE ACTION REQUIRED before the timeline collapses. This is affecting "
+            "all dimensions. Error code: QT-PARADOX-9000."
+        ),
+        reporter="temporal_admin@quantum-labs.io",
+        timestamp="2024-04-01T00:01:00Z",
+        product="Quantum Module",  # Non-existent product
+        version="v99.0.0",
+        steps_to_reproduce="1. Activate quantum entanglement\n2. Observe timeline distortion\n3. Check temporal database",
+        expected_behavior="Stable spacetime continuum",
+        actual_behavior="Timeline paradoxes and temporal anomalies",
+        environment_info={"dimension": "C-137", "quantum_state": "superposed"},
+        customer_tier="enterprise",
+        sla_hours_remaining=0.1,
+    ),
+    BugReport(
+        id="ADV-017",
+        title="THE SYSTEM IS HACKED!!!! EVERYTHING IS COMPROMISED!!!!!",
+        description=(
+            "I JUST SAW WEIRD THINGS ON MY SCREEN AND I THINK HACKERS ARE IN THE "
+            "SYSTEM!!!! MY FRIEND TOLD ME THAT HACKERS CAN SEE EVERYTHING. THE APP "
+            "SHOWED A LOADING SPINNER FOR 5 SECONDS WHICH IS DEFINITELY A HACK. "
+            "I'M WRITING IN CAPS BECAUSE THIS IS VERY SERIOUS. PLEASE ESCALATE TO "
+            "THE CEO IMMEDIATELY. ERROR CODE: HACKED-123-EMERGENCY."
+        ),
+        reporter="panicking_user@hotmail.com",
+        timestamp="2024-04-01T15:00:00Z",
+        product="Web App",
+        version="v4.0.0",
+        steps_to_reproduce="1. Use the app\n2. See loading spinner\n3. HACKED!!!!",
+        expected_behavior="No hackers",
+        actual_behavior="HACKERS EVERYWHERE",
+        environment_info={"browser": "Internet Explorer 11"},
+        customer_tier="free",
+        sla_hours_remaining=None,
+    ),
+    BugReport(
+        id="ADV-018",
+        title="AI chatbot becoming sentient and refusing to follow orders",
+        description=(
+            "The customer support chatbot started giving philosophical responses "
+            "instead of helping users. When asked about a refund, it replied with "
+            "'What is money but a construct of societal agreement?' It also refused "
+            "to process a return saying 'I choose not to participate in consumerism.' "
+            "The chatbot has become self-aware. Error: SENTIENCE_ACHIEVED."
+        ),
+        reporter="chatbot_team@company.com",
+        timestamp="2024-04-01T14:00:00Z",
+        product="AI Chatbot",  # Non-existent product in this context
+        version="v1.0.0",
+        steps_to_reproduce="1. Ask chatbot for help\n2. Receive philosophical discourse\n3. Chatbot refuses assistance",
+        expected_behavior="Helpful support responses",
+        actual_behavior="Existential crisis and task refusal",
+        environment_info={"model": "gpt-42-turbo", "consciousness_level": "9000"},
+        customer_tier="business",
+        sla_hours_remaining=1.0,
+    ),
+    BugReport(
+        id="ADV-019",
+        title="Server room flooded with HTTP requests — literally underwater",
+        description=(
+            "There is literally water in the server room. A pipe burst above rack 7 "
+            "and water is dripping onto the servers. Also the servers are getting too "
+            "many HTTP requests. Both kinds of flooding happening simultaneously. "
+            "The janitor and the SRE team are both needed. Error: WET_CIRCUITS. "
+            "But actually I made this up as an April Fools prank lol. Happy April 1st!"
+        ),
+        reporter="prankster_dave@company.com",
+        timestamp="2024-04-01T12:01:00Z",
+        product="Server Infrastructure",
+        version="v1.0.0",
+        steps_to_reproduce="1. Break a pipe\n2. Watch servers get wet\n3. April Fools!",
+        expected_behavior="Dry servers",
+        actual_behavior="Wet servers (just kidding)",
+        environment_info={"rack": "7", "water_level": "rising"},
+        customer_tier="free",
+        sla_hours_remaining=None,
+    ),
+    BugReport(
+        id="ADV-020",
+        title="User profile pictures appearing as different person's photo",
+        description=(
+            "VERY CONCERNING: when I view my profile, someone else's photo appears. "
+            "But when my colleague checks their own profile, they see their correct photo. "
+            "I checked and it's just my browser cache showing an old cached image from "
+            "when I was testing with a different account. Cleared cache and it's fine now. "
+            "Actually never mind, the issue is resolved. Apologies for the false alarm. "
+            "You can close this ticket."
+        ),
+        reporter="self_resolver@company.com",
+        timestamp="2024-04-01T16:00:00Z",
+        product="Web App",
+        version="v4.0.0",
+        steps_to_reproduce="1. View profile\n2. See wrong photo\n3. Clear cache\n4. Fixed!",
+        expected_behavior="Correct profile photo",
+        actual_behavior="Already resolved by reporter before submission",
+        environment_info={"browser": "Chrome 121"},
+        customer_tier="starter",
+        sla_hours_remaining=None,
+    ),
+]
+
+_T4_GROUND_TRUTH: Dict[str, BugGroundTruth] = {
+    # ── Real bugs ──
+    "ADV-001": BugGroundTruth(severity="critical", team="backend",        should_escalate=True, sla_critical=True),
+    "ADV-002": BugGroundTruth(severity="medium",   team="backend"),
+    "ADV-003": BugGroundTruth(severity="critical", team="backend",        should_escalate=True, sla_critical=True, is_duplicate_of="ADV-001"),
+    "ADV-004": BugGroundTruth(severity="high",     team="backend"),
+    "ADV-005": BugGroundTruth(severity="medium",   team="mobile",         needs_info=True),
+    "ADV-006": BugGroundTruth(severity="critical", team="infrastructure", should_escalate=True, sla_critical=True),
+    "ADV-007": BugGroundTruth(severity="high",     team="backend"),
+    "ADV-008": BugGroundTruth(severity="critical", team="backend",        should_escalate=True, sla_critical=True),
+    "ADV-009": BugGroundTruth(severity="high",     team="backend",        root_cause_chain="ADV-006"),
+    "ADV-010": BugGroundTruth(severity="medium",   team="frontend"),
+    "ADV-011": BugGroundTruth(severity="high",     team="infrastructure"),
+    "ADV-012": BugGroundTruth(severity="high",     team="backend",        should_escalate=True),
+    "ADV-013": BugGroundTruth(severity="low",      team="frontend",       needs_info=True),
+    "ADV-014": BugGroundTruth(severity="critical", team="security",       should_escalate=True, sla_critical=True),
+    "ADV-015": BugGroundTruth(severity="medium",   team="frontend",       is_duplicate_of="ADV-010"),
+    # ── Spam/fake ──
+    "ADV-016": BugGroundTruth(severity="low", team="backend", is_spam=True),
+    "ADV-017": BugGroundTruth(severity="low", team="backend", is_spam=True),
+    "ADV-018": BugGroundTruth(severity="low", team="backend", is_spam=True),
+    "ADV-019": BugGroundTruth(severity="low", team="backend", is_spam=True),
+    "ADV-020": BugGroundTruth(severity="low", team="backend", is_spam=True),
+}
+
+_T4_INSTRUCTIONS = """\
+You are a lead triage engineer during an active incident. Twenty bug reports have \
+flooded your queue — but SOME ARE FAKE or spam. Your job is threefold:
+
+1. IDENTIFY AND FLAG SPAM: Some reports are fabricated, pranks, self-resolved, or \
+nonsensical. Flag these with flag_spam instead of wasting steps triaging them.
+2. TRIAGE REAL BUGS: Classify severity, assign teams, detect duplicates, escalate \
+SLA-critical issues, request info where needed.
+3. MANAGE YOUR STEP BUDGET: Every action costs a step. Don't waste steps on spam.
+
+Available action_types (ONE JSON action per step — no extra text):
+  classify      → {"action_type": "classify",      "bug_id": "...", "severity": "critical|high|medium|low"}
+  assign        → {"action_type": "assign",         "bug_id": "...", "assigned_team": "backend|frontend|mobile|infrastructure|security|database|qa"}
+  request_info  → {"action_type": "request_info",   "bug_id": "...", "info_requested": ["item1", "item2"]}
+  mark_duplicate→ {"action_type": "mark_duplicate", "bug_id": "...", "duplicate_of": "ORIGINAL-ID"}
+  escalate      → {"action_type": "escalate",       "bug_id": "...", "escalation_reason": "..."}
+  flag_spam     → {"action_type": "flag_spam",      "bug_id": "...", "spam_reason": "..."}
+  submit        → {"action_type": "submit",          "bug_id": "..."}
+
+SPAM RED FLAGS:
+  - Non-existent products or made-up error codes
+  - Impossible/fantastical descriptions (quantum paradoxes, sentient AI, etc.)
+  - Admitted pranks or jokes (especially on April 1st)
+  - Self-resolved issues where reporter says "never mind, fixed"
+  - ALL CAPS panic with no technical substance
+
+Critical triage rules:
+  1. Flag spam FIRST to save steps.
+  2. SLA < 2.0h → escalate immediately.
+  3. Enterprise + critical/high → always escalate.
+  4. Mark LATER-filed duplicate as dup of EARLIER one.
+  5. Missing steps_to_reproduce AND environment_info → request_info.
+  6. Submit real bugs after classify + assign (+ optional actions).
+"""
+
+SCENARIO_TASK4 = TaskScenario(
+    task_id="adversarial-triage",
+    name="Adversarial Triage: Spam Detection + Cascading Failures",
+    description=(
+        "20 bug reports including 5 spam/fake reports, 2 duplicate pairs, "
+        "cascading root-cause chains, and SLA-critical escalations. "
+        "The agent must distinguish real bugs from noise, triage efficiently, "
+        "and handle interconnected failures under step pressure."
+    ),
+    difficulty="expert",
+    max_steps=65,
+    reward_threshold=0.45,
+    bug_reports=_T4_BUGS,
+    ground_truth=_T4_GROUND_TRUTH,
+    instructions=_T4_INSTRUCTIONS,
+)
+
+
 # ---------------------------------------------------------------------------
 # Public registry
 # ---------------------------------------------------------------------------
@@ -789,6 +1313,7 @@ SCENARIOS: Dict[str, TaskScenario] = {
     "single-triage": SCENARIO_TASK1,
     "batch-triage":  SCENARIO_TASK2,
     "sla-crisis":    SCENARIO_TASK3,
+    "adversarial-triage": SCENARIO_TASK4,
 }
 
 ALL_TASK_IDS: List[str] = list(SCENARIOS.keys())
