@@ -201,7 +201,11 @@ WORKFLOW per bug:
   For real: classify → assign → (optional: escalate/request_info/mark_duplicate) → submit
   Always classify and assign BEFORE submitting.
 
-PRIORITY ORDER: Flag spam first, then handle SLA-critical bugs, then the rest.""")
+PRIORITY ORDER: Flag spam first, then handle SLA-critical bugs, then the rest.
+
+IMPORTANT (adversarial-triage only): SLA timers TICK DOWN with every step you take.
+Every action you spend on a low-priority bug costs SLA time on critical ones.
+Prioritize ruthlessly: flag spam fast, then handle the shortest SLA bugs FIRST.""")
 
 
 def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
@@ -209,6 +213,7 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
     unprocessed     = obs.get("unprocessed_bug_ids", [])
     submitted       = obs.get("submitted_bug_ids", [])
     flagged_spam    = obs.get("flagged_spam_ids", [])
+    sla_breached    = obs.get("sla_breached_bug_ids", [])
     steps_remaining = obs.get("steps_remaining", 0)
     classifications = obs.get("current_classifications", {})
     assignments     = obs.get("current_assignments", {})
@@ -272,6 +277,7 @@ Step {step_num} | Steps remaining: {steps_remaining}
 Unprocessed ({len(unprocessed)}): {', '.join(unprocessed)}
 Submitted ({len(submitted)}): {', '.join(submitted) if submitted else 'none'}
 Flagged spam ({len(flagged_spam)}): {', '.join(flagged_spam) if flagged_spam else 'none'}
+{'SLA BREACHED: ' + ', '.join(sla_breached) if sla_breached else ''}
 
 Bugs needing action:
 {''.join(bug_summaries) if bug_summaries else '  All bugs processed.'}

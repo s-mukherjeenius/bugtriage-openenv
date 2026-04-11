@@ -20,6 +20,11 @@ from app.models import (
 )
 from app.scenarios import SCENARIOS, TaskScenario
 
+# SLA timer decrements per step (only for adversarial-triage)
+# With 0.02h/step and 65 max steps: ADV-014 (0.2h SLA) breaches after ~10 steps,
+# ADV-001 (0.5h) after ~25 steps — creates real prioritization pressure.
+SLA_TICK_PER_STEP = 0.02
+
 _AVAILABLE_TEAMS = [
     "backend", "frontend", "mobile",
     "infrastructure", "security", "database", "qa",
@@ -124,6 +129,20 @@ class BugTriageEnv:
 
         self._state.step_number += 1
         step_reward, reward_msg = self._apply_action(action)
+
+        # ── Ticking SLA: every step costs time (adversarial-triage only) ──
+        sla_penalty, sla_msg = self._tick_sla()
+        step_reward += sla_penalty
+        if sla_msg:
+            reward_msg += "; " + sla_msg
+
+        # ── Root-cause cascade bonus ──
+        if action.action_type.value == "submit":
+            rc_bonus, rc_msg = self._check_root_cause_resolution(action.bug_id)
+            step_reward += rc_bonus
+            if rc_msg:
+                reward_msg += "; " + rc_msg
+
         self._state.total_reward += step_reward
 
         history_entry: Dict[str, Any] = {
@@ -243,10 +262,76 @@ class BugTriageEnv:
 
     def _check_done(self) -> bool:
         st = self._state
-        # Flagged spam + submitted = all accounted for
         accounted = len(st.submitted_bugs) + len(st.flagged_spam)
         return (accounted >= len(st.bug_reports)
                 or st.step_number >= st.max_steps)
+
+    # ------------------------------------------------------------------
+    # Ticking SLA — time pressure mechanic (Task 4 only)
+    # ------------------------------------------------------------------
+
+    def _tick_sla(self) -> tuple[float, str]:
+        """Decrement SLA timers for all active bugs. Returns (penalty, message)."""
+        if self.task_name not in ("adversarial-triage",):
+            return 0.0, ""
+
+        st = self._state
+        active_ids = {b.id for b in st.bug_reports
+                      if b.id not in st.submitted_bugs and b.id not in st.flagged_spam}
+        newly_breached = []
+
+        for bug in st.bug_reports:
+            if bug.id in active_ids and bug.sla_hours_remaining is not None:
+                bug.sla_hours_remaining = round(
+                    max(0.0, bug.sla_hours_remaining - SLA_TICK_PER_STEP), 3
+                )
+                if bug.sla_hours_remaining == 0.0:
+                    # Check if this is a NEW breach (not already at 0 before)
+                    if bug.id not in getattr(st, '_sla_breached_cache', set()):
+                        newly_breached.append(bug.id)
+
+        # Cache breached IDs to avoid repeat penalties
+        if not hasattr(st, '_sla_breached_cache'):
+            st._sla_breached_cache = set()
+        st._sla_breached_cache.update(newly_breached)
+
+        if newly_breached:
+            penalty = -0.03 * len(newly_breached)
+            return penalty, f"⚠ SLA BREACH: {', '.join(newly_breached)} hit 0h"
+        return 0.0, ""
+
+    # ------------------------------------------------------------------
+    # Cascading Root-Cause Resolution
+    # ------------------------------------------------------------------
+
+    def _check_root_cause_resolution(self, bug_id: str) -> tuple[float, str]:
+        """Bonus when agent resolves a root-cause bug before its downstream symptoms."""
+        gt_map = self._scenario.ground_truth
+        st = self._state
+
+        # Find bugs whose root_cause_chain points to this bug
+        downstream = [
+            bid for bid, gt in gt_map.items()
+            if getattr(gt, 'root_cause_chain', None) == bug_id
+        ]
+        if not downstream:
+            return 0.0, ""
+
+        # Only give bonus if the root cause was correctly classified and assigned
+        bug_gt = gt_map.get(bug_id)
+        if not bug_gt:
+            return 0.0, ""
+        correct_sev = st.classifications.get(bug_id) == bug_gt.severity
+        correct_team = st.assignments.get(bug_id) == bug_gt.team
+
+        if correct_sev and correct_team:
+            # Check if downstream bugs are still unresolved (bonus for fixing root cause FIRST)
+            unresolved_downstream = [bid for bid in downstream if bid not in st.submitted_bugs]
+            if unresolved_downstream:
+                return 0.12, f"★ Root cause resolved! Downstream {unresolved_downstream} will benefit"
+            else:
+                return 0.05, f"✓ Root cause confirmed (downstream already handled)"
+        return 0.0, ""
 
     def _make_observation(self) -> BugTriageObservation:
         st = self._state
@@ -266,6 +351,11 @@ class BugTriageEnv:
             duplicate_map=dict(st.duplicates),
             escalated_bug_ids=list(st.escalations),
             flagged_spam_ids=list(st.flagged_spam),
+            sla_breached_bug_ids=[
+                b.id for b in st.bug_reports
+                if b.sla_hours_remaining is not None and b.sla_hours_remaining <= 0.0
+                and b.id not in submitted_set and b.id not in flagged_set
+            ],
             available_teams=_AVAILABLE_TEAMS,
             steps_remaining=max(0, st.max_steps - st.step_number),
             cumulative_reward=round(st.total_reward, 4),

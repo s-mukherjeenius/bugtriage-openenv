@@ -501,7 +501,23 @@ def grade_adversarial_triage(state: "BugTriageState", scenario: "TaskScenario") 
         eff = _efficiency_factor(state.step_number, scenario.max_steps, total_bugs)
     else:
         eff = 0.0
-    components["efficiency"] = eff * 0.05
+    components["efficiency"] = eff * 0.03
+
+    # Root-cause resolution (2%) — bonus for identifying root causes before symptoms
+    rc_bugs = {gt.root_cause_chain for bid, gt in gt_map.items()
+               if getattr(gt, 'root_cause_chain', None)}
+    if rc_bugs:
+        resolved_before = 0
+        for rc_id in rc_bugs:
+            if rc_id in state.submitted_bugs:
+                # Check if root cause was submitted before all its downstream bugs
+                rc_gt = gt_map.get(rc_id)
+                if rc_gt and state.classifications.get(rc_id) == rc_gt.severity:
+                    resolved_before += 1
+        rc_score = resolved_before / len(rc_bugs)
+    else:
+        rc_score = 1.0
+    components["root_cause_resolution"] = _clamp(rc_score) * 0.02
 
     total = _clamp(sum(components.values()))
     return {"score": round(total, 4), "components": {k: round(v, 4) for k, v in components.items()}}

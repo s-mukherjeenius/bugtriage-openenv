@@ -105,9 +105,10 @@ python rl_train.py
 
 ### Task 4: Adversarial Triage — Spam Detection + Cascading Failures (Expert)
 - **20 bugs** (15 real + 5 spam/fake), max **65 steps**, threshold **0.45**
-- Agents must identify and flag spam reports (quantum paradoxes, admitted pranks, self-resolved tickets, all-caps panic with no substance) while triaging real bugs that include 2 duplicate pairs, cascading root-cause chains (e.g. Redis pool exhaustion → stale search cache), SLA-critical escalations, and incomplete reports.
-- **New `flag_spam` action** — correctly flagging spam saves steps and earns +0.20 reward; falsely flagging real bugs incurs -0.15 penalty.
-- **Spam detection scoring** (20% of episode grade) rewards precision: correctly flagging fakes while never mislabeling legitimate reports.
+- **Ticking SLA timers** — every step the agent takes costs 0.02h of SLA across ALL active bugs. Spend 3 steps triaging a cosmetic tooltip? That critical SQL injection just got closer to breach. This forces genuine strategic prioritization, not just sequential processing.
+- **Cascading root-cause resolution** — ADV-006 (Redis pool exhaustion) is the root cause of ADV-009 (stale search cache). When the agent correctly resolves the root cause BEFORE its downstream symptom, it earns a +0.12 bonus. The optimal strategy requires understanding incident dependency graphs.
+- **Adversarial spam detection** — 5 fake reports (quantum paradoxes, admitted pranks, sentient AI, self-resolved tickets) must be flagged to save steps. Correctly flagging earns +0.20; falsely flagging a real bug costs -0.15.
+- **SLA breach penalties** — when a bug's SLA timer hits zero, the agent takes a -0.03 penalty per breach. Multiple breaches cascade rapidly.
 
 ---
 
@@ -162,6 +163,8 @@ Each step returns a `BugTriageObservation` containing:
 | Request info         | +0.10    | —        | -0.05    |
 | Flag spam (correct)  | +0.20    | —        | -0.15    |
 | Submit (complete)    | +0.08    | +0.02    | -0.08    |
+| Root cause resolved  | +0.12    | +0.05    | —        |
+| SLA breach (per bug) | —        | —        | -0.03    |
 
 **Episode-level grading** returns a score in [0.0, 1.0] with weighted components:
 
@@ -173,7 +176,8 @@ Each step returns a `BugTriageObservation` containing:
 | Duplicate detection   | —      | 20%    | 20%    | 15%    |
 | SLA/Security escalation| 10%   | 10%    | 20%    | 15%    |
 | Info request quality  | 15%    | 10%    | 10%    | 10%    |
-| Efficiency            | 5%     | 5%     | 5%     | 5%     |
+| Root-cause resolution | —      | —      | —      | 2%     |
+| Efficiency            | 5%     | 5%     | 5%     | 3%     |
 
 ---
 

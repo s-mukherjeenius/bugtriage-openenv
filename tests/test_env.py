@@ -359,6 +359,86 @@ class TestTask4FlagSpam:
         assert dup_count == 2
 
 
+class TestTickingSLA:
+    """Test ticking SLA timers in adversarial-triage task."""
+
+    def test_sla_decrements_each_step(self):
+        """SLA timers should decrease after each step in Task 4."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        # Get initial SLA for ADV-001 (0.5h)
+        initial_sla = None
+        for b in env.state().bug_reports:
+            if b.id == "ADV-001":
+                initial_sla = b.sla_hours_remaining
+                break
+        assert initial_sla == 0.5
+        # Take one step
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-002", severity=Severity.MEDIUM))
+        # SLA should have decreased
+        for b in env.state().bug_reports:
+            if b.id == "ADV-001":
+                assert b.sla_hours_remaining < initial_sla
+                break
+
+    def test_sla_not_ticking_for_task1(self):
+        """SLA should NOT tick for non-adversarial tasks."""
+        env = BugTriageEnv("single-triage")
+        env.reset()
+        initial_sla = env.state().bug_reports[0].sla_hours_remaining
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="PAY-001", severity=Severity.CRITICAL))
+        assert env.state().bug_reports[0].sla_hours_remaining == initial_sla
+
+    def test_sla_breach_appears_in_observation(self):
+        """Bugs with SLA=0 should appear in sla_breached_bug_ids."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        # ADV-014 has 0.2h SLA. After ~10 steps at 0.02h/step, it breaches.
+        for i in range(12):
+            result = env.step(
+                TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-002", severity=Severity.MEDIUM)
+            )
+        assert "ADV-014" in result.observation.sla_breached_bug_ids
+
+    def test_submitted_bugs_sla_stops_ticking(self):
+        """SLA should not tick for submitted bugs."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        # Submit ADV-001
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-001", severity=Severity.CRITICAL))
+        env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="ADV-001", assigned_team=Team.BACKEND))
+        env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="ADV-001"))
+        # Take more steps — ADV-001 should not breach since it's submitted
+        for _ in range(30):
+            env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-002", severity=Severity.MEDIUM))
+        assert "ADV-001" not in [b.id for b in env.state().bug_reports if b.sla_hours_remaining == 0.0 and b.id not in env.state().submitted_bugs]
+
+
+class TestRootCauseResolution:
+    """Test cascading root-cause resolution mechanics."""
+
+    def test_root_cause_bonus_when_resolved_first(self):
+        """Correctly submitting root cause (ADV-006) before downstream (ADV-009) gives bonus."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        # Correctly triage ADV-006 (root cause: Redis pool exhausted)
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-006", severity=Severity.CRITICAL))
+        env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="ADV-006", assigned_team=Team.INFRASTRUCTURE))
+        result = env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="ADV-006"))
+        # Should get root-cause bonus since ADV-009 is still unresolved
+        assert result.reward > 0.08  # More than base submit reward
+        assert "Root cause" in result.info.get("reward_message", "")
+
+    def test_no_root_cause_bonus_for_regular_bug(self):
+        """Non-root-cause bugs should not get the bonus."""
+        env = BugTriageEnv("adversarial-triage")
+        env.reset()
+        env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="ADV-002", severity=Severity.MEDIUM))
+        env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="ADV-002", assigned_team=Team.BACKEND))
+        result = env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="ADV-002"))
+        assert "Root cause" not in result.info.get("reward_message", "")
+
+
 class TestDynamicStaticTransition:
     """Regression: verify dynamic scenarios don't leak into static resets."""
 

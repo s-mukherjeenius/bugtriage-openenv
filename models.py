@@ -110,6 +110,7 @@ class BugTriageObservation(Observation):
     unprocessed_bug_ids:    List[str]        = Field(default_factory=list)
     submitted_bug_ids:      List[str]        = Field(default_factory=list)
     flagged_spam_ids:       List[str]        = Field(default_factory=list)
+    sla_breached_bug_ids:    List[str]        = Field(default_factory=list)
     current_classifications: Dict[str, str]  = Field(default_factory=dict)
     current_assignments:     Dict[str, str]  = Field(default_factory=dict)
     duplicate_map:           Dict[str, str]  = Field(default_factory=dict)

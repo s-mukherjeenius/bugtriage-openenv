@@ -20,6 +20,8 @@ except ImportError:
     from app.scenarios import SCENARIOS                                         # type: ignore[no-redef]
     from app.graders import compute_step_reward, grade_episode                 # type: ignore[no-redef]
 
+SLA_TICK_PER_STEP = 0.02
+
 _AVAILABLE_TEAMS = [
     "backend", "frontend", "mobile",
     "infrastructure", "security", "database", "qa",
@@ -119,6 +121,7 @@ class BugTriageEnvironment(Environment):
         self._info_requests: Dict[str, list] = {}
         self._submitted_bugs: list = []
         self._flagged_spam: list = []
+        self._sla_breached_cache: set = set()
         self._action_history: list = []
 
     def _apply_action(self, action: BugTriageAction):
@@ -166,7 +169,21 @@ class BugTriageEnvironment(Environment):
         if action.assigned_team:  payload["assigned_team"] = action.assigned_team.value
         if action.duplicate_of:   payload["duplicate_of"] = action.duplicate_of
         if action.info_requested: payload["info_requested"] = action.info_requested
-        return compute_step_reward(atype, bug_id, self._scenario, tmp, payload)
+        reward, msg = compute_step_reward(atype, bug_id, self._scenario, tmp, payload)
+
+        # Ticking SLA (adversarial-triage only)
+        if self._task_name == "adversarial-triage":
+            active_ids = {b.id for b in self._scenario.bug_reports
+                          if b.id not in self._submitted_bugs and b.id not in self._flagged_spam}
+            for bug in self._scenario.bug_reports:
+                if bug.id in active_ids and bug.sla_hours_remaining is not None:
+                    bug.sla_hours_remaining = round(max(0.0, bug.sla_hours_remaining - SLA_TICK_PER_STEP), 3)
+                    if bug.sla_hours_remaining == 0.0 and bug.id not in self._sla_breached_cache:
+                        self._sla_breached_cache.add(bug.id)
+                        reward -= 0.03
+                        msg += f"; ⚠ SLA BREACH: {bug.id}"
+
+        return reward, msg
 
     def _check_done(self) -> bool:
         accounted = len(self._submitted_bugs) + len(self._flagged_spam)
@@ -186,6 +203,11 @@ class BugTriageEnvironment(Environment):
                                  if b.id not in submitted_set and b.id not in flagged_set],
             submitted_bug_ids=list(self._submitted_bugs),
             flagged_spam_ids=list(self._flagged_spam),
+            sla_breached_bug_ids=[
+                b.id for b in self._scenario.bug_reports
+                if b.sla_hours_remaining is not None and b.sla_hours_remaining <= 0.0
+                and b.id not in submitted_set and b.id not in flagged_set
+            ],
             current_classifications=dict(self._classifications),
             current_assignments=dict(self._assignments),
             duplicate_map=dict(self._duplicates),

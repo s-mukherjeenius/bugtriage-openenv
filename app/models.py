@@ -156,6 +156,9 @@ class BugTriageObservation(BaseModel):
     flagged_spam_ids: List[str] = Field(
         default_factory=list, description="Bug IDs flagged as spam/fake"
     )
+    sla_breached_bug_ids: List[str] = Field(
+        default_factory=list, description="Bug IDs whose SLA timer hit zero (Task 4: ticking SLA)"
+    )
 
     available_teams: List[str] = Field(
         ..., description="Valid team names for assignment"
