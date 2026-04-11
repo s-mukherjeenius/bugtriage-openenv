@@ -1082,7 +1082,7 @@ _T4_BUGS: List[BugReport] = [
         description=(
             "WAF logs show repeated SQL injection attempts on /admin/users/search?q= "
             "that are SUCCEEDING. The admin search endpoint uses raw string "
-            "concatenation: `WHERE name LIKE '%" + query + "%'`. An attacker is "
+            "concatenation: WHERE name LIKE '%{input}%'. An attacker is "
             "extracting the admin_sessions table. We have confirmed data exfiltration "
             "of 47 active admin session tokens in the last 30 minutes. This is a "
             "P0 security breach."
