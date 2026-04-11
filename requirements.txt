@@ -1,5 +1,4 @@
 # BugTriage OpenEnv — Runtime Dependencies
-openenv-core>=0.2.1
 fastapi>=0.115.5
 uvicorn[standard]>=0.32.1
 pydantic>=2.11.0
