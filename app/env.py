@@ -251,6 +251,7 @@ class BugTriageEnv:
     def _make_observation(self) -> BugTriageObservation:
         st = self._state
         submitted_set = set(st.submitted_bugs)
+        flagged_set = set(st.flagged_spam)
         return BugTriageObservation(
             step_number=st.step_number,
             task_name=self.task_name,
@@ -258,7 +259,7 @@ class BugTriageEnv:
             instructions=self._scenario.instructions,
             bug_reports=st.bug_reports,
             action_history=self._action_history[-20:],
-            unprocessed_bug_ids=[b.id for b in st.bug_reports if b.id not in submitted_set],
+            unprocessed_bug_ids=[b.id for b in st.bug_reports if b.id not in submitted_set and b.id not in flagged_set],
             submitted_bug_ids=list(st.submitted_bugs),
             current_classifications=dict(st.classifications),
             current_assignments=dict(st.assignments),
