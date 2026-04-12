@@ -24,6 +24,7 @@ from app.scenarios import SCENARIOS, TaskScenario
 # With 0.02h/step and 65 max steps: ADV-014 (0.2h SLA) breaches after ~10 steps,
 # ADV-001 (0.5h) after ~25 steps — creates real prioritization pressure.
 SLA_TICK_PER_STEP = 0.02
+ACTION_HISTORY_MAX = 20  # Max history entries returned in observations
 
 _AVAILABLE_TEAMS = [
     "backend", "frontend", "mobile",
@@ -107,6 +108,7 @@ class BugTriageEnv:
             total_reward=0.0,
             done=False,
             episode_complete=False,
+            info_revealed_ids=[],
         )
         self._action_history = []
         return ResetResult(
@@ -128,6 +130,8 @@ class BugTriageEnv:
             raise RuntimeError("Episode is done. Call reset() to start a new episode.")
 
         self._state.step_number += 1
+        # Reset per-step reveal tracker before processing the action
+        self._state.info_revealed_ids = []
         step_reward, reward_msg = self._apply_action(action)
 
         # ── Ticking SLA: every step costs time (adversarial-triage only) ──
@@ -223,6 +227,61 @@ class BugTriageEnv:
             if not items:
                 return -0.04, "request_info requires non-empty 'info_requested'"
             st.info_requests[bug_id] = items
+            # ── Reveal hidden details if this bug has them ──────────────────
+            # This is the core Option-A mechanic: incomplete bug reports have
+            # their full technical context (stack trace, repro steps, env info)
+            # stored in hidden_details. Calling request_info triggers the
+            # reporter to respond with those details, updating the observation.
+            for bug in st.bug_reports:
+                if bug.id == bug_id and bug.hidden_details:
+                    reveal_text = bug.hidden_details
+                    bug.description = (
+                        bug.description
+                        + "\n\n[REPORTER RESPONSE — ADDITIONAL DETAILS]\n"
+                        + reveal_text
+                    )
+                    # Parse structured fields from hidden_details so they
+                    # show up in the observation's structured columns too.
+                    if "Steps to reproduce:" in reveal_text:
+                        # Extract steps block (up to first blank line after it)
+                        lines = reveal_text.split("\n")
+                        capturing = False
+                        steps_lines = []
+                        for line in lines:
+                            if line.strip().startswith("Steps to reproduce:"):
+                                capturing = True
+                                continue
+                            if capturing:
+                                if line.strip() == "" and steps_lines:
+                                    break
+                                if line.strip():
+                                    steps_lines.append(line.strip())
+                        if steps_lines:
+                            bug.steps_to_reproduce = "\n".join(steps_lines)
+                    if "Environment:" in reveal_text:
+                        # Extract environment block as a dict
+                        lines = reveal_text.split("\n")
+                        capturing = False
+                        env_dict: Dict[str, str] = {}
+                        for line in lines:
+                            if line.strip().startswith("Environment:"):
+                                capturing = True
+                                continue
+                            if capturing:
+                                if line.strip() == "" and env_dict:
+                                    break
+                                stripped = line.strip().lstrip("  ")
+                                if ":" in stripped and stripped:
+                                    k, _, v = stripped.partition(":")
+                                    env_dict[k.strip()] = v.strip()
+                        if env_dict:
+                            bug.environment_info = env_dict
+                    # Mark as consumed — cannot be re-revealed
+                    bug.hidden_details = None
+                    # Signal which bugs got new info this step
+                    if bug_id not in st.info_revealed_ids:
+                        st.info_revealed_ids.append(bug_id)
+                    break
 
         elif action_type == "mark_duplicate":
             if action.duplicate_of is None:
@@ -286,14 +345,10 @@ class BugTriageEnv:
                     max(0.0, bug.sla_hours_remaining - SLA_TICK_PER_STEP), 3
                 )
                 if bug.sla_hours_remaining == 0.0:
-                    # Check if this is a NEW breach (not already at 0 before)
-                    if bug.id not in getattr(st, '_sla_breached_cache', set()):
+                    if bug.id not in st.sla_breached_ids:
                         newly_breached.append(bug.id)
 
-        # Cache breached IDs to avoid repeat penalties
-        if not hasattr(st, '_sla_breached_cache'):
-            st._sla_breached_cache = set()
-        st._sla_breached_cache.update(newly_breached)
+        st.sla_breached_ids.update(newly_breached)
 
         if newly_breached:
             penalty = -0.03 * len(newly_breached)
@@ -343,7 +398,7 @@ class BugTriageEnv:
             task_description=_TASK_DESCRIPTIONS.get(self.task_name, ""),
             instructions=self._scenario.instructions,
             bug_reports=st.bug_reports,
-            action_history=self._action_history[-20:],
+            action_history=self._action_history[-ACTION_HISTORY_MAX:],
             unprocessed_bug_ids=[b.id for b in st.bug_reports if b.id not in submitted_set and b.id not in flagged_set],
             submitted_bug_ids=list(st.submitted_bugs),
             current_classifications=dict(st.classifications),
@@ -356,6 +411,7 @@ class BugTriageEnv:
                 if b.sla_hours_remaining is not None and b.sla_hours_remaining <= 0.0
                 and b.id not in submitted_set and b.id not in flagged_set
             ],
+            info_revealed_bug_ids=list(getattr(st, "info_revealed_ids", [])),
             available_teams=_AVAILABLE_TEAMS,
             steps_remaining=max(0, st.max_steps - st.step_number),
             cumulative_reward=round(st.total_reward, 4),

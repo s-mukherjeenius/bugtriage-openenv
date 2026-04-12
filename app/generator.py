@@ -420,6 +420,180 @@ _ENV_INFO_POOL = [
     {"os": "Amazon Linux 2", "runtime": "Node.js 20", "region": "us-east-2"},
 ]
 
+# ── Realistic stack traces (indexed by team) ─────────────────────────────
+
+_STACK_TRACES: Dict[str, List[str]] = {
+    "backend": [
+        (
+            "java.lang.NullPointerException\n"
+            "  at com.company.payment.PaymentService.processCharge(PaymentService.java:247)\n"
+            "  at com.company.checkout.CheckoutHandler.handle(CheckoutHandler.java:89)\n"
+            "  at com.company.api.RouteDispatcher.dispatch(RouteDispatcher.java:134)\n"
+            "  at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:379)"
+        ),
+        (
+            "Traceback (most recent call last):\n"
+            '  File "/app/services/billing.py", line 142, in process_webhook\n'
+            "    event = stripe.Event.construct_from(payload, stripe.api_key)\n"
+            '  File "/app/services/billing.py", line 158, in _handle_refund\n'
+            "    order.status = OrderStatus(event['data']['status'])\n"
+            "TypeError: 'NoneType' object is not subscriptable"
+        ),
+        (
+            "Error: ECONNREFUSED 10.0.3.42:5432\n"
+            "  at TCPConnectWrap.afterConnect [as oncomplete] (net.js:1141:16)\n"
+            "  at Pool._acquireClient (/app/node_modules/pg-pool/index.js:197:17)\n"
+            "  at /app/src/routes/api.js:34:22"
+        ),
+    ],
+    "security": [
+        (
+            "CRITICAL [auth-service] JWT verification bypass detected\n"
+            "  Token header: {\"alg\": \"none\", \"typ\": \"JWT\"}\n"
+            "  Signature verification: SKIPPED (alg=none)\n"
+            "  Source IP: 185.220.101.xx (Tor exit node)\n"
+            "  at JwtVerifier.verify(JwtVerifier.java:67)\n"
+            "  at AuthMiddleware.authenticate(AuthMiddleware.java:42)"
+        ),
+        (
+            "SQL injection detected in access logs:\n"
+            "  GET /api/v2/users/search?query=admin'%20OR%201=1--\n"
+            "  Response: 200 OK (returned 15,847 rows)\n"
+            "  Unparameterized query: SELECT * FROM users WHERE name LIKE '%admin' OR 1=1--%'"
+        ),
+    ],
+    "database": [
+        (
+            "ERROR:  canceling statement due to statement timeout\n"
+            "DETAIL:  User query might have needed to see row versions that must be removed.\n"
+            "CONTEXT:  SQL statement \"SELECT * FROM events WHERE tenant_id = $1 ORDER BY created_at DESC\"\n"
+            "          parallel worker (PID 48291)\n"
+            "EXPLAIN ANALYZE: Seq Scan on events  (cost=0.00..8,547,231.00 rows=1 width=284)\n"
+            "                 (actual rows=52,847 loops=1)  Total runtime: 45,231.482 ms"
+        ),
+    ],
+    "infrastructure": [
+        (
+            "kubelet[2847]: E0115 03:17:42.891234  container_manager.go:295] "
+            "\"Failed to create pod sandbox\" pod=\"processing/worker-batch-7f4b8\" "
+            "err=\"rpc error: code = Unknown desc = failed to create containerd task: "
+            "OCI runtime create failed: container_linux.go:380: starting container process "
+            "caused: process_linux.go:545: container init caused: write /proc/self/attr/current: "
+            "permission denied: unknown\""
+        ),
+    ],
+    "frontend": [
+        (
+            "Uncaught TypeError: Cannot read properties of undefined (reading 'classList')\n"
+            "  at toggleSidebar (sidebar.js:47:23)\n"
+            "  at ThemeProvider.switchTheme (theme-provider.jsx:89:5)\n"
+            "  at HTMLButtonElement.<anonymous> (settings.jsx:134:11)"
+        ),
+    ],
+    "mobile": [
+        (
+            "Exception Type:  EXC_BAD_ACCESS (SIGSEGV)\n"
+            "Exception Codes: KERN_INVALID_ADDRESS at 0x0000000000000010\n"
+            "Crashed Thread:  0  Dispatch queue: com.apple.main-thread\n\n"
+            "Thread 0 Crashed:\n"
+            "0   UIKitCore    0x1a2f34567 -[UIView(Geometry) _applyISEngineLayoutValues] + 112\n"
+            "1   CompanyApp   0x100abc890 -[HomeViewController viewDidLayoutSubviews] + 68\n"
+            "2   UIKitCore    0x1a2e89012 -[UIViewController _updateViewLayout] + 224"
+        ),
+    ],
+}
+
+# ── Log snippets (realistic service logs) ────────────────────────────────
+
+_LOG_SNIPPETS: Dict[str, List[str]] = {
+    "backend": [
+        (
+            "[2024-01-15 14:32:17.234] ERROR checkout-api — PaymentService: upstream connect error "
+            "or disconnect/reset before headers. reset reason: connection failure, transport failure reason: immediate connect error\n"
+            "[2024-01-15 14:32:17.235] ERROR checkout-api — 127 consecutive failures in last 60s\n"
+            "[2024-01-15 14:32:17.891] WARN  checkout-api — Circuit breaker OPEN for stripe-gateway (failure rate: 100%)"
+        ),
+        (
+            "[2024-01-15 09:12:44.001] ERROR billing-svc — WebhookProcessor: ClassCastException processing event evt_1234\n"
+            "[2024-01-15 09:12:44.002] ERROR billing-svc — Dead letter queue size: 347 events (oldest: 14h ago)\n"
+            "[2024-01-15 09:12:44.003] WARN  billing-svc — OrderCompletionHandler: 340 orders stuck in PENDING state"
+        ),
+    ],
+    "security": [
+        (
+            "[2024-01-15 02:14:33.001] ALERT auth-service — Token with alg:none accepted by verifier\n"
+            "[2024-01-15 02:14:33.002] ALERT auth-service — 47 requests with forged tokens from 185.220.101.0/24 in last hour\n"
+            "[2024-01-15 02:14:33.003] CRITICAL auth-service — Unauthorized access to admin endpoints detected"
+        ),
+    ],
+    "database": [
+        (
+            "[2024-01-15 11:45:02.117] WARN  analytics-db — Query on 'events' table exceeded 30s timeout (actual: 45.2s)\n"
+            "[2024-01-15 11:45:02.118] INFO  analytics-db — VACUUM ANALYZE last ran 21 days ago\n"
+            "[2024-01-15 11:45:02.119] WARN  analytics-db — Table statistics stale: estimated 1 row, actual 52,847 rows"
+        ),
+    ],
+    "infrastructure": [
+        (
+            "[2024-01-15 03:15:22.001] CRITICAL db-cluster — Primary node db-primary-01 UNREACHABLE (timeout: 30s)\n"
+            "[2024-01-15 03:15:52.002] WARN  db-cluster — Failover initiated → replica db-replica-02\n"
+            "[2024-01-15 03:16:22.003] ERROR db-cluster — Failover INCOMPLETE: replica stuck in read-only mode\n"
+            "[2024-01-15 03:17:22.004] CRITICAL db-cluster — All write operations FAILING across 12 services"
+        ),
+    ],
+    "frontend": [
+        (
+            "[browser:console] TypeError: Cannot read properties of undefined (reading 'classList')\n"
+            "[browser:console] at toggleSidebar (sidebar.js:47:23)\n"
+            "[browser:network] GET /api/theme → 200 (theme: 'dark')\n"
+            "[browser:layout] Sidebar element width computed as 0px after theme switch"
+        ),
+    ],
+    "mobile": [
+        (
+            "[CrashReporter] EXC_BAD_ACCESS in UIKit layout engine\n"
+            "[CrashReporter] Affected devices: iPhone 15 Pro (iOS 18.0), iPad Air M2 (iOS 18.0)\n"
+            "[CrashReporter] Crash rate: 12.3% of iOS 18 sessions (1,847 crashes in 24h)\n"
+            "[CrashReporter] Last stable version: v4.2.3 (iOS 17.x)"
+        ),
+    ],
+}
+
+# ── Impact metrics templates ─────────────────────────────────────────────
+
+def _generate_impact_metrics(rng: random.Random, severity: str, tier: str) -> Dict[str, Any]:
+    """Generate realistic quantified impact metrics based on severity and customer tier."""
+    if severity == "critical":
+        return {
+            "affected_users": rng.choice([1000, 5000, 15000, 50000, "all"]),
+            "affected_percentage": f"{rng.uniform(80, 100):.0f}%",
+            "error_rate": f"{rng.uniform(90, 100):.1f}%",
+            "revenue_impact_per_hour": f"${rng.choice([5000, 12000, 25000, 50000]):,}",
+            "p99_latency_ms": rng.choice([None, 30000, 60000, "timeout"]),
+            "uptime_sla_at_risk": True,
+        }
+    elif severity == "high":
+        return {
+            "affected_users": rng.choice([200, 500, 2000, 8000]),
+            "affected_percentage": f"{rng.uniform(10, 50):.0f}%",
+            "error_rate": f"{rng.uniform(15, 60):.1f}%",
+            "revenue_impact_per_hour": f"${rng.choice([500, 2000, 5000]):,}",
+            "p99_latency_ms": rng.choice([5000, 10000, 15000]),
+        }
+    elif severity == "medium":
+        return {
+            "affected_users": rng.choice([50, 100, 300]),
+            "affected_percentage": f"{rng.uniform(2, 15):.0f}%",
+            "error_rate": f"{rng.uniform(1, 10):.1f}%",
+            "workaround_available": True,
+        }
+    else:  # low
+        return {
+            "affected_users": rng.choice([10, 25, "cosmetic"]),
+            "functional_impact": "none",
+            "visual_only": True,
+        }
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Duplicate pair generation
@@ -523,6 +697,29 @@ def _template_to_bug(
     if not strip_info:
         env_info = rng.choice(_ENV_INFO_POOL).copy()
 
+    # When stripping info, generate the full context but store it in hidden_details
+    # so request_info can reveal it — this is the core Option-A mechanic for
+    # dynamically generated scenarios.
+    hidden_details = None
+    if strip_info:
+        full_steps = rng.choice(_STEPS_TO_REPRODUCE_POOL).format(product=template.product)
+        full_env = rng.choice(_ENV_INFO_POOL).copy()
+        env_str = "\n".join(f"  {k}: {v}" for k, v in full_env.items())
+        hidden_details = (
+            f"Steps to reproduce:\n{full_steps}\n\n"
+            f"Environment:\n{env_str}"
+        )
+        # For critical/high bugs also include a stack trace
+        if template.severity in ("critical", "high"):
+            team_traces = _STACK_TRACES.get(template.team, [])
+            if team_traces:
+                trace = rng.choice(team_traces)
+                hidden_details += f"\n\nStack trace:\n{trace}"
+        hidden_details += (
+            f"\n\nRoot cause hint: Issue in {template.team} component. "
+            f"Expected severity: {template.severity}."
+        )
+
     # SLA: critical/high bugs from enterprise get tight SLAs
     if sla_hours is None:
         if template.severity == "critical":
@@ -544,6 +741,23 @@ def _template_to_bug(
     if customer_tier == "enterprise" and template.severity in ("critical", "high"):
         should_escalate = True
 
+    # Generate stack trace (critical/high bugs get traces ~80% of the time)
+    stack_trace = None
+    if not strip_info and template.severity in ("critical", "high") and rng.random() < 0.8:
+        team_traces = _STACK_TRACES.get(template.team, [])
+        if team_traces:
+            stack_trace = rng.choice(team_traces)
+
+    # Generate log snippet
+    log_snippet = None
+    if not strip_info and rng.random() < 0.7:
+        team_logs = _LOG_SNIPPETS.get(template.team, [])
+        if team_logs:
+            log_snippet = rng.choice(team_logs)
+
+    # Generate impact metrics
+    impact_metrics = _generate_impact_metrics(rng, template.severity, customer_tier)
+
     bug = BugReport(
         id=bug_id,
         title=template.title,
@@ -559,6 +773,10 @@ def _template_to_bug(
         customer_tier=customer_tier,
         sla_hours_remaining=sla_hours,
         linked_bug_ids=None,
+        stack_trace=stack_trace,
+        log_snippet=log_snippet,
+        impact_metrics=impact_metrics,
+        hidden_details=hidden_details,
     )
 
     gt = BugGroundTruth(

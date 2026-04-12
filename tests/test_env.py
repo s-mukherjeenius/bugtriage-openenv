@@ -197,7 +197,7 @@ class TestGraders:
         env_easy.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="PAY-001", severity=Severity.LOW))
         env_easy.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="PAY-001", assigned_team=Team.QA))
         env_easy.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="PAY-001"))
-        assert env_easy.grade()["score"] < 0.25
+        assert env_easy.grade()["score"] < 0.35  # completion component adds value for submitting
 
     def test_grade_deterministic(self, env_easy):
         env_easy.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="PAY-001", severity=Severity.CRITICAL))
@@ -346,7 +346,7 @@ class TestTask4FlagSpam:
         for sid in spam_ids:
             env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=sid, spam_reason="spam"))
         grade = env.grade()
-        assert grade["components"]["spam_detection"] == pytest.approx(0.20)
+        assert grade["components"]["spam_detection"] == pytest.approx(0.18)
 
     def test_task4_scenario_has_spam_bugs(self):
         gt = SCENARIOS["adversarial-triage"].ground_truth

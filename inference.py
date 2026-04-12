@@ -187,6 +187,12 @@ ESCALATION RULES:
 
 REQUEST_INFO RULES:
   - ONLY when BOTH steps_to_reproduce AND environment_info are completely absent/null
+  - IMPORTANT: calling request_info on an incomplete bug REVEALS hidden details from
+    the reporter — the next observation will include the full stack trace, reproduction
+    steps, and environment info appended to the bug description.
+  - Check info_revealed_bug_ids in the observation — if a bug ID appears there, its
+    description has been updated with new technical details. Re-read it before classifying.
+  - You MUST call request_info BEFORE classify on any bug missing both fields above.
 
 SPAM DETECTION RULES (for adversarial-triage task):
   - Flag as spam if: non-existent products, made-up error codes (QT-PARADOX, SENTIENCE_ACHIEVED, etc.)
@@ -214,6 +220,7 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
     submitted       = obs.get("submitted_bug_ids", [])
     flagged_spam    = obs.get("flagged_spam_ids", [])
     sla_breached    = obs.get("sla_breached_bug_ids", [])
+    info_revealed   = obs.get("info_revealed_bug_ids", [])
     steps_remaining = obs.get("steps_remaining", 0)
     classifications = obs.get("current_classifications", {})
     assignments     = obs.get("current_assignments", {})
@@ -234,7 +241,7 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
 
         if isinstance(bug, dict):
             title = bug.get("title", "")[:120]
-            desc  = bug.get("description", "")[:250].replace("\n", " ")
+            desc_full = bug.get("description", "")
             sla   = bug.get("sla_hours_remaining")
             tier  = bug.get("customer_tier", "unknown")
             product = bug.get("product", "")
@@ -244,7 +251,7 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
             linked    = bug.get("linked_bug_ids", []) or []
         else:
             title = getattr(bug, "title", "")[:120]
-            desc  = getattr(bug, "description", "")[:250].replace("\n", " ")
+            desc_full = getattr(bug, "description", "")
             sla   = getattr(bug, "sla_hours_remaining", None)
             tier  = getattr(bug, "customer_tier", "unknown")
             product = getattr(bug, "product", "")
@@ -253,14 +260,22 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
             timestamp = getattr(bug, "timestamp", "")
             linked    = getattr(bug, "linked_bug_ids", []) or []
 
+        # Show full description for just-revealed bugs, truncated for others
+        just_revealed = bid in info_revealed
+        if just_revealed:
+            desc = desc_full.replace("\n", " ")  # full text — details just revealed
+        else:
+            desc = desc_full[:250].replace("\n", " ")
+
         sla_str = f"{sla:.1f}h" if sla is not None else "none"
         missing = []
         if not has_steps: missing.append("steps_to_reproduce")
         if not has_env:   missing.append("environment_info")
 
         summary = f"\n  {bid}: severity={classified} team={assigned} sla={sla_str} tier={tier} esc={esc}"
+        if just_revealed: summary += " *** INFO JUST REVEALED — read description carefully ***"
         if dup:      summary += f" DUP_OF={dup}"
-        if missing:  summary += f" MISSING=[{','.join(missing)}]"
+        if missing:  summary += f" MISSING=[{','.join(missing)}] → call request_info first"
         if linked:   summary += f" linked={linked}"
         summary += f"\n    Title: {title}"
         summary += f"\n    Desc: {desc}"
@@ -272,12 +287,17 @@ def _build_user_prompt(obs: Dict[str, Any], step_num: int) -> str:
         for h in action_history[-8:]
     ]
 
+    revealed_alert = (
+        f"\n⚡ INFO REVEALED THIS STEP: {', '.join(info_revealed)} — re-read their descriptions before classifying!"
+        if info_revealed else ""
+    )
+
     return textwrap.dedent(f"""\
 Step {step_num} | Steps remaining: {steps_remaining}
 Unprocessed ({len(unprocessed)}): {', '.join(unprocessed)}
 Submitted ({len(submitted)}): {', '.join(submitted) if submitted else 'none'}
 Flagged spam ({len(flagged_spam)}): {', '.join(flagged_spam) if flagged_spam else 'none'}
-{'SLA BREACHED: ' + ', '.join(sla_breached) if sla_breached else ''}
+{'SLA BREACHED: ' + ', '.join(sla_breached) if sla_breached else ''}{revealed_alert}
 
 Bugs needing action:
 {''.join(bug_summaries) if bug_summaries else '  All bugs processed.'}

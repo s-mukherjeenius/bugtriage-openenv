@@ -1,7 +1,7 @@
 """BugTriage OpenEnv — Grader correctness tests + generator tests."""
 import pytest
 from app.env import BugTriageEnv
-from app.graders import compute_step_reward, _severity_adjacent, _efficiency_factor
+from app.graders import compute_step_reward, _severity_adjacent, _team_score, _efficiency_factor
 from app.models import ActionType, Severity, Team, TriageAction
 from app.scenarios import SCENARIOS
 
@@ -23,12 +23,29 @@ class TestSeverityAdjacent:
         assert _severity_adjacent("unknown", "critical") == 0.0
 
 
+class TestTeamScore:
+    def test_exact(self):
+        assert _team_score("backend", "backend") == 1.0
+
+    def test_adjacent(self):
+        assert _team_score("infrastructure", "backend") == 0.3
+
+    def test_wrong(self):
+        assert _team_score("frontend", "backend") == 0.0
+
+    def test_frontend_mobile_adjacent(self):
+        assert _team_score("mobile", "frontend") == 0.3
+
+    def test_qa_no_adjacents(self):
+        assert _team_score("backend", "qa") == 0.0
+
+
 class TestEfficiency:
     def test_min_steps(self):
         assert _efficiency_factor(3, 5, 1) == 1.0
 
     def test_max_steps(self):
-        assert abs(_efficiency_factor(5, 5, 1) - 0.85) < 0.01
+        assert abs(_efficiency_factor(5, 5, 1) - 0.30) < 0.01
 
 
 class TestStepRewards:
@@ -53,6 +70,10 @@ class TestStepRewards:
     def test_correct_assign(self):
         r, _ = compute_step_reward("assign", "PAY-001", self.scenario, self.env.state(), {"assigned_team": "backend"})
         assert r == pytest.approx(0.12)
+
+    def test_adjacent_assign(self):
+        r, _ = compute_step_reward("assign", "PAY-001", self.scenario, self.env.state(), {"assigned_team": "infrastructure"})
+        assert r == pytest.approx(0.04)  # backend <-> infrastructure are adjacent
 
     def test_wrong_assign(self):
         r, _ = compute_step_reward("assign", "PAY-001", self.scenario, self.env.state(), {"assigned_team": "qa"})
@@ -112,10 +133,10 @@ class TestGraderTask1:
         assert self._perfect().grade()["score"] >= 0.80
 
     def test_severity_component(self):
-        assert self._perfect().grade()["components"]["severity"] == pytest.approx(0.40)
+        assert self._perfect().grade()["components"]["severity"] == pytest.approx(0.35)
 
     def test_team_component(self):
-        assert self._perfect().grade()["components"]["team"] == pytest.approx(0.30)
+        assert self._perfect().grade()["components"]["team"] == pytest.approx(0.25)
 
 
 class TestGraderTask2:
@@ -169,12 +190,12 @@ class TestGraderTask3:
         env.step(TriageAction(action_type=ActionType.MARK_DUPLICATE, bug_id="CRI-009", duplicate_of="CRI-003"))
         env.step(TriageAction(action_type=ActionType.MARK_DUPLICATE, bug_id="CRI-011", duplicate_of="CRI-004"))
         env.step(TriageAction(action_type=ActionType.MARK_DUPLICATE, bug_id="CRI-012", duplicate_of="CRI-007"))
-        assert env.grade()["components"]["duplicate_detection"] == pytest.approx(0.20)
+        assert env.grade()["components"]["duplicate_detection"] == pytest.approx(0.18)
 
     def test_all_components_present(self):
         env = BugTriageEnv("sla-crisis")
         env.reset()
-        required = {"severity", "team", "duplicate_detection", "sla_escalations", "info_requests", "efficiency"}
+        required = {"severity", "team", "duplicate_detection", "sla_escalations", "info_requests", "efficiency", "completion"}
         assert required.issubset(env.grade()["components"].keys())
 
     def test_score_bounds(self):
@@ -197,7 +218,7 @@ class TestGraderTask4:
         env = BugTriageEnv("adversarial-triage")
         env.reset()
         required = {"spam_detection", "severity", "team", "duplicate_detection",
-                    "sla_escalations", "info_requests", "efficiency"}
+                    "sla_escalations", "info_requests", "efficiency", "root_cause_resolution", "completion"}
         assert required.issubset(env.grade()["components"].keys())
 
     def test_spam_detection_score(self):
@@ -205,7 +226,7 @@ class TestGraderTask4:
         env.reset()
         for sid in ["ADV-016", "ADV-017", "ADV-018", "ADV-019", "ADV-020"]:
             env.step(TriageAction(action_type=ActionType.FLAG_SPAM, bug_id=sid, spam_reason="spam"))
-        assert env.grade()["components"]["spam_detection"] == pytest.approx(0.20)
+        assert env.grade()["components"]["spam_detection"] == pytest.approx(0.18)
 
     def test_false_spam_flag_penalty(self):
         env = BugTriageEnv("adversarial-triage")
@@ -236,9 +257,9 @@ class TestGraderTask4:
         assert env.grade()["score"] >= 0.45
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 # Dynamic Scenario Generator Tests
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 
 class TestGeneratorBasic:
     """Test that the generator produces valid scenarios."""
@@ -278,7 +299,7 @@ class TestGeneratorBasic:
         s2 = generate_scenario("batch-triage", seed=999)
         titles1 = {b.title for b in s1.bug_reports}
         titles2 = {b.title for b in s2.bug_reports}
-        assert titles1 != titles2  # different seeds → different bugs
+        assert titles1 != titles2  # different seeds -> different bugs
 
     def test_unique_bug_ids(self):
         from app.generator import generate_scenario
@@ -367,7 +388,7 @@ class TestGeneratorGrading:
         env = BugTriageEnv("sla-crisis")
         env.reset(seed=42)
         grade = env.grade()
-        assert grade["score"] == 0.0  # no actions taken yet → zero score
+        assert grade["score"] == 0.0  # no actions taken yet -> zero score
         assert "sla_escalations" in grade["components"]
 
     def test_generated_perfect_easy_high_score(self):
@@ -388,14 +409,14 @@ class TestGeneratorGrading:
     def test_static_scenarios_unchanged(self):
         """Verify static scenarios still produce same results as before."""
         env = BugTriageEnv("single-triage")
-        env.reset()  # no seed → static scenario
+        env.reset()  # no seed -> static scenario
         env.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="PAY-001", severity=Severity.CRITICAL))
         env.step(TriageAction(action_type=ActionType.ASSIGN, bug_id="PAY-001", assigned_team=Team.BACKEND))
         env.step(TriageAction(action_type=ActionType.ESCALATE, bug_id="PAY-001", escalation_reason="P0"))
         env.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="PAY-001"))
         assert env.grade()["score"] >= 0.80
-        assert env.grade()["components"]["severity"] == pytest.approx(0.40)
-        assert env.grade()["components"]["team"] == pytest.approx(0.30)
+        assert env.grade()["components"]["severity"] == pytest.approx(0.35)
+        assert env.grade()["components"]["team"] == pytest.approx(0.25)
 
 
 class TestGeneratorExpert:

@@ -1,57 +1,41 @@
 """
-BugTriage OpenEnv — Root models.
-Defines Action and Observation using openenv-core typed base classes.
-These are the contracts between client and server.
+BugTriage OpenEnv — Root models (openenv-core typed).
+=====================================================
+Canonical domain types (Severity, Team, ActionType, BugReport, TriageAction)
+live in app/models.py. This module re-exports them and adds the openenv-core
+typed wrappers (Action, Observation, State) required by the server layer.
+
+This avoids duplicate enum/model definitions across the codebase.
 """
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+# ── Import canonical domain types from app/models.py ──
+from app.models import (  # noqa: F401 — re-exported
+    ActionType,
+    BugReport,
+    BugTriageObservation as InternalObservation,
+    BugTriageReward,
+    BugTriageState as InternalState,
+    Severity,
+    Team,
+    TriageAction,
+)
+
+# ── openenv-core base classes (with fallback for local dev) ──
 try:
     from openenv.core.env_server.types import Action, Observation, State
 except ImportError:
-    # Fallback for local dev without openenv-core installed
-    from pydantic import BaseModel as Action          # type: ignore[assignment]
-    from pydantic import BaseModel as Observation     # type: ignore[assignment]
-    from pydantic import BaseModel as State           # type: ignore[assignment]
+    from pydantic import BaseModel as Action       # type: ignore[assignment]
+    from pydantic import BaseModel as Observation   # type: ignore[assignment]
+    from pydantic import BaseModel as State         # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
-# Enumerations
-# ---------------------------------------------------------------------------
-
-class Severity(str, Enum):
-    CRITICAL = "critical"
-    HIGH     = "high"
-    MEDIUM   = "medium"
-    LOW      = "low"
-
-
-class Team(str, Enum):
-    BACKEND        = "backend"
-    FRONTEND       = "frontend"
-    MOBILE         = "mobile"
-    INFRASTRUCTURE = "infrastructure"
-    SECURITY       = "security"
-    DATABASE       = "database"
-    QA             = "qa"
-
-
-class ActionType(str, Enum):
-    CLASSIFY       = "classify"
-    ASSIGN         = "assign"
-    REQUEST_INFO   = "request_info"
-    MARK_DUPLICATE = "mark_duplicate"
-    ESCALATE       = "escalate"
-    FLAG_SPAM      = "flag_spam"
-    SUBMIT         = "submit"
-
-
-# ---------------------------------------------------------------------------
-# Action — one triage decision per step
+# Action — openenv-typed wrapper (used by server layer + client)
 # ---------------------------------------------------------------------------
 
 class BugTriageAction(Action):
@@ -81,7 +65,7 @@ class BugTriageAction(Action):
 
 
 # ---------------------------------------------------------------------------
-# Observation — what the agent sees after each step
+# Observation — openenv-typed wrapper (returned by server to client)
 # ---------------------------------------------------------------------------
 
 class BugTriageObservation(Observation):
@@ -107,41 +91,28 @@ class BugTriageObservation(Observation):
     )
 
     # ── triage state ──
-    unprocessed_bug_ids:    List[str]        = Field(default_factory=list)
-    submitted_bug_ids:      List[str]        = Field(default_factory=list)
-    flagged_spam_ids:       List[str]        = Field(default_factory=list)
+    unprocessed_bug_ids:     List[str]        = Field(default_factory=list)
+    submitted_bug_ids:       List[str]        = Field(default_factory=list)
+    flagged_spam_ids:        List[str]        = Field(default_factory=list)
     sla_breached_bug_ids:    List[str]        = Field(default_factory=list)
-    current_classifications: Dict[str, str]  = Field(default_factory=dict)
-    current_assignments:     Dict[str, str]  = Field(default_factory=dict)
-    duplicate_map:           Dict[str, str]  = Field(default_factory=dict)
-    escalated_bug_ids:       List[str]       = Field(default_factory=list)
+    current_classifications: Dict[str, str]   = Field(default_factory=dict)
+    current_assignments:     Dict[str, str]   = Field(default_factory=dict)
+    duplicate_map:           Dict[str, str]   = Field(default_factory=dict)
+    escalated_bug_ids:       List[str]        = Field(default_factory=list)
 
     # ── meta ──
-    action_history:  List[Dict[str, Any]] = Field(default_factory=list)
-    available_teams: List[str]            = Field(default_factory=list)
-    steps_remaining: int                  = Field(0)
-    cumulative_reward: float              = Field(0.0)
+    action_history:    List[Dict[str, Any]] = Field(default_factory=list)
+    available_teams:   List[str]            = Field(default_factory=list)
+    steps_remaining:   int                  = Field(0)
+    cumulative_reward: float                = Field(0.0)
 
 
 # ---------------------------------------------------------------------------
 # Reward — structured reward with component breakdown
 # ---------------------------------------------------------------------------
 
-class BugTriageReward(BaseModel):
-    """
-    Typed Reward model — satisfies OpenEnv spec requirement for
-    a named Reward Pydantic model alongside Action and Observation.
-
-    Step rewards range from -0.15 to +0.20 for continuous signal.
-    Episode-level grader scores are in [0.0, 1.0].
-
-    value       — scalar reward for this step
-    components  — named breakdown (e.g. {'severity': 0.10, 'team': 0.08})
-    message     — human-readable explanation of what happened
-    """
-    value:      float            = Field(..., ge=-1.0, le=1.0, description="Step reward or episode score")
-    components: Dict[str, float] = Field(default_factory=dict)
-    message:    str              = Field("", description="Explanation")
+# Re-export BugTriageReward from app/models.py (already defined there)
+# Available as: from models import BugTriageReward
 
 
 # ---------------------------------------------------------------------------
@@ -149,12 +120,12 @@ class BugTriageReward(BaseModel):
 # ---------------------------------------------------------------------------
 
 class BugTriageState(State):
-    """Episode-level metadata for inspection."""
+    """Episode-level metadata for inspection (openenv-typed)."""
 
-    task_name:      str   = Field("", description="Active task name")
-    step_number:    int   = Field(0,  description="Steps taken so far")
-    max_steps:      int   = Field(0,  description="Maximum steps per episode")
-    total_reward:   float = Field(0.0)
-    done:           bool  = Field(False)
-    submitted_count: int  = Field(0,  description="Number of bugs submitted")
-    total_bugs:     int   = Field(0,  description="Total bugs in this episode")
+    task_name:       str   = Field("", description="Active task name")
+    step_number:     int   = Field(0,  description="Steps taken so far")
+    max_steps:       int   = Field(0,  description="Maximum steps per episode")
+    total_reward:    float = Field(0.0)
+    done:            bool  = Field(False)
+    submitted_count: int   = Field(0,  description="Number of bugs submitted")
+    total_bugs:      int   = Field(0,  description="Total bugs in this episode")

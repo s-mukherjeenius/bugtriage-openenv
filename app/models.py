@@ -7,7 +7,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +75,24 @@ class BugReport(BaseModel):
     )
     linked_bug_ids: Optional[List[str]] = Field(
         None, description="IDs of bugs known to be related"
+    )
+    stack_trace: Optional[str] = Field(
+        None, description="Exception stack trace, if available"
+    )
+    log_snippet: Optional[str] = Field(
+        None, description="Relevant log lines from the service"
+    )
+    impact_metrics: Optional[Dict[str, Any]] = Field(
+        None, description="Quantified user/business impact (affected_users, error_rate, revenue_impact, etc.)"
+    )
+    hidden_details: Optional[str] = Field(
+        None,
+        description=(
+            "Hidden technical context (stack trace, reproduction steps, environment) "
+            "withheld at episode start because the reporter left them blank. "
+            "Appended to bug.description and structured fields when the agent calls "
+            "request_info on this bug. None means the report is already complete."
+        ),
     )
 
 
@@ -159,6 +177,14 @@ class BugTriageObservation(BaseModel):
     sla_breached_bug_ids: List[str] = Field(
         default_factory=list, description="Bug IDs whose SLA timer hit zero (Task 4: ticking SLA)"
     )
+    info_revealed_bug_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Bug IDs whose hidden details were just revealed this step via request_info. "
+            "Check these IDs and re-read the updated bug descriptions to get the full "
+            "stack trace, reproduction steps, and environment info."
+        ),
+    )
 
     available_teams: List[str] = Field(
         ..., description="Valid team names for assignment"
@@ -217,6 +243,12 @@ class BugTriageState(BaseModel):
     done: bool
     episode_complete: bool                 # all bugs submitted OR max_steps hit
 
+    # Internal tracking — not exposed via API
+    sla_breached_ids: set = Field(default_factory=set, exclude=True, description="Cache of SLA-breached bug IDs")
+    info_revealed_ids: List[str] = Field(default_factory=list, exclude=True, description="Bug IDs revealed by request_info THIS step — reset each step")
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 
 # ---------------------------------------------------------------------------
 # API Response Models
@@ -250,3 +282,4 @@ class HealthResponse(BaseModel):
     version: str
     active_task: Optional[str]
     step_number: int
+    active_sessions: int = 1

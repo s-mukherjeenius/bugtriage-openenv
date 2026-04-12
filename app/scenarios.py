@@ -250,6 +250,25 @@ _T2_BUGS: List[BugReport] = [
         environment_info=None,          # MISSING — agent should request_info
         customer_tier="free",
         sla_hours_remaining=None,
+        hidden_details=(
+            "Steps to reproduce:\n"
+            "1. Open mobile app on iOS 17.3 (iPhone 14 Pro)\n"
+            "2. Navigate to the dashboard and tap 'Sync Data'\n"
+            "3. Minimize the app immediately while sync is in progress\n"
+            "4. Re-open within 5 seconds — crash occurs reliably\n\n"
+            "Environment:\n"
+            "  Device: iPhone 14 Pro, iOS 17.3\n"
+            "  App version: 4.2.1 (build 421)\n"
+            "  Network: WiFi + cellular handoff active\n\n"
+            "Stack trace:\n"
+            "Fatal Exception: EXC_BAD_ACCESS KERN_INVALID_ADDRESS\n"
+            "0  SyncManager.swift:247 -[SyncTask resume] + 0x34\n"
+            "1  BackgroundQueue.swift:89 dispatch_async_f + 0x18\n"
+            "2  AppDelegate.swift:156 applicationWillEnterForeground + 0x64\n\n"
+            "Root cause: SyncTask holds a dangling pointer to a deallocated URLSession\n"
+            "delegate when the app is backgrounded mid-sync. Team: mobile. Severity: medium.\n"
+            "Fix: weak reference on URLSession delegate in SyncTask."
+        ),
     ),
     BugReport(
         id="BUG-006",
@@ -356,7 +375,10 @@ Available action_types (one JSON action per step — no extra text):
 Strategy:
   - Look for reports describing the same root cause with different wording (duplicates).
   - Mark the LATER-submitted report as duplicate of the EARLIER one.
-  - Only request_info when steps_to_reproduce or environment_info are completely absent.
+  - When steps_to_reproduce AND environment_info are both absent → call request_info FIRST.
+    The reporter will respond with the missing stack trace, reproduction steps, and device
+    info. Re-read the updated bug description before classifying — the hidden details
+    change which team and severity are correct.
   - All critical security vulnerabilities must be escalated.
   - Submit each bug once classify + assign (+ any optional actions) are done.
 """
@@ -493,6 +515,25 @@ _T3_BUGS: List[BugReport] = [
         environment_info=None,          # MISSING
         customer_tier="starter",
         sla_hours_remaining=None,
+        hidden_details=(
+            "Steps to reproduce:\n"
+            "1. Log in as User A on Chrome 122 (macOS)\n"
+            "2. Navigate to Settings > Account Switcher\n"
+            "3. Switch to User B's account (multi-account feature)\n"
+            "4. Observe: User A's organisation name appears in User B's sidebar\n"
+            "5. Dashboard content belongs to User B but org context is User A's\n\n"
+            "Environment:\n"
+            "  Browser: Chrome 122.0.6261.94 on macOS Sonoma 14.2\n"
+            "  Feature flag: multi-account-switcher=enabled\n"
+            "  Account plan: starter (multi-account enabled)\n\n"
+            "Console error:\n"
+            "TypeError: Cannot read properties of undefined (reading 'orgId')\n"
+            "  at AccountSwitcher.tsx:134 resolveUserContext\n"
+            "  at React.useEffect — previous orgId not cleared on account switch\n\n"
+            "Root cause: React context not flushed between account switches — orgId from\n"
+            "previous session persists in useContext hook. Team: frontend. Severity: medium.\n"
+            "Fix: explicit context.reset() call inside switchAccount() before re-render."
+        ),
     ),
     BugReport(
         id="CRI-006",
@@ -682,6 +723,25 @@ _T3_BUGS: List[BugReport] = [
         environment_info=None,          # MISSING
         customer_tier="free",
         sla_hours_remaining=None,
+        hidden_details=(
+            "Steps to reproduce:\n"
+            "1. Open Android app (Google Pixel 6, Android 14)\n"
+            "2. Go to Notifications settings and enable 'background sync'\n"
+            "3. Leave app running overnight with screen off\n"
+            "4. App crashes consistently between 2–4 AM during background sync window\n\n"
+            "Environment:\n"
+            "  Device: Google Pixel 6, Android 14.0\n"
+            "  App version: 3.9.0 (build 390)\n"
+            "  Only occurs with background sync enabled; manual sync is fine\n\n"
+            "Stack trace:\n"
+            "FATAL EXCEPTION: WorkManager-WorkerFactory-thread-5\n"
+            "java.lang.OutOfMemoryError: Failed to allocate a 48MB allocation\n"
+            "  at com.app.sync.BulkSyncWorker.doWork(BulkSyncWorker.kt:203)\n"
+            "  at androidx.work.Worker.startWork(Worker.java:298)\n\n"
+            "Root cause: BulkSyncWorker loads entire user dataset into memory at once.\n"
+            "Low-priority background worker, no SLA breach. Team: mobile. Severity: low.\n"
+            "Fix: paginate sync in 500-record batches to stay within memory budget."
+        ),
     ),
     BugReport(
         id="CRI-015",
@@ -758,7 +818,10 @@ Critical triage rules:
   1. Bugs with sla_hours_remaining < 2.0 → escalate immediately.
   2. Enterprise customer + critical or high severity → always escalate.
   3. Mark the LATER-submitted report as duplicate of the EARLIER one when root cause matches.
-  4. If steps_to_reproduce AND environment_info are both absent → request_info before classifying.
+  4. If steps_to_reproduce AND environment_info are both absent → call request_info FIRST.
+     The reporter will respond with the missing stack trace, device info, and reproduction
+     steps. Re-read the updated bug description — the revealed details determine the correct
+     team and severity.
   5. Linked bugs (linked_bug_ids) often share a root cause — align severity decisions.
   6. Submit each bug after classify + assign (+ optional actions) to free up your queue.
 
@@ -907,6 +970,26 @@ _T4_BUGS: List[BugReport] = [
         environment_info=None,  # MISSING
         customer_tier="starter",
         sla_hours_remaining=None,
+        hidden_details=(
+            "Steps to reproduce:\n"
+            "1. Open app on Samsung Galaxy S23 (Android 13, One UI 5.1)\n"
+            "2. Grant notification permissions when prompted on first launch\n"
+            "3. Use the app normally — crash occurs within 10–20 minutes of active use\n"
+            "4. Reproducible 100% on Samsung devices; not reproducible on Pixel\n\n"
+            "Environment:\n"
+            "  Device: Samsung Galaxy S23, Android 13 (One UI 5.1)\n"
+            "  App version: 4.2.1 (build 421)\n"
+            "  Samsung-specific memory management is the key differentiator\n\n"
+            "Stack trace:\n"
+            "FATAL EXCEPTION: main\n"
+            "java.lang.NullPointerException: Attempt to invoke virtual method on null object\n"
+            "  at com.app.notification.PushHandler.onTokenRefresh(PushHandler.kt:87)\n"
+            "  at com.google.firebase.messaging.FirebaseMessagingService.handleIntent\n\n"
+            "Root cause: Samsung One UI aggressively kills background services, leaving\n"
+            "PushHandler with a null FirebaseMessaging instance on token refresh.\n"
+            "Team: mobile. Severity: medium.\n"
+            "Fix: null-check + lazy re-init of FirebaseMessaging in onTokenRefresh()."
+        ),
     ),
     BugReport(
         id="ADV-006",
@@ -1075,6 +1158,25 @@ _T4_BUGS: List[BugReport] = [
         environment_info=None,  # MISSING
         customer_tier="free",
         sla_hours_remaining=None,
+        hidden_details=(
+            "Steps to reproduce:\n"
+            "1. Navigate to the dashboard on Chrome 121 (Windows 11)\n"
+            "2. Log in to a project with more than 50 tasks\n"
+            "3. Observe: initial dashboard load takes 8–12 seconds\n"
+            "4. Subsequent navigation is fast — only first load is slow\n\n"
+            "Environment:\n"
+            "  Browser: Chrome 121.0.6167.184 on Windows 11\n"
+            "  Network: 100 Mbps connection (not an ISP issue)\n"
+            "  Only affects projects with >50 tasks; small projects load in <1s\n\n"
+            "Performance profile (Chrome DevTools):\n"
+            "  DOMContentLoaded: 8,340ms\n"
+            "  Largest Contentful Paint: 11,200ms\n"
+            "  Network waterfall: 847 individual API calls fired on dashboard mount\n\n"
+            "Root cause: TaskList component calls GET /api/tasks/{id} individually for each\n"
+            "task instead of the bulk endpoint GET /api/tasks?project_id=X (N+1 API calls).\n"
+            "Team: frontend. Severity: low.\n"
+            "Fix: replace individual fetches with single bulk call in useEffect hook."
+        ),
     ),
     BugReport(
         id="ADV-014",
@@ -1283,7 +1385,10 @@ Critical triage rules:
   2. SLA < 2.0h → escalate immediately.
   3. Enterprise + critical/high → always escalate.
   4. Mark LATER-filed duplicate as dup of EARLIER one.
-  5. Missing steps_to_reproduce AND environment_info → request_info.
+  5. Missing steps_to_reproduce AND environment_info → call request_info FIRST.
+     The reporter will respond with the missing stack trace, device info, and reproduction
+     steps appended to the bug description. Re-read before classifying — the revealed
+     details determine the correct team and severity.
   6. Submit real bugs after classify + assign (+ optional actions).
 """
 

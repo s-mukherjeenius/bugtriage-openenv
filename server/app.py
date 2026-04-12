@@ -58,13 +58,14 @@ def health() -> Dict[str, Any]:
 
 
 @app.post("/reset")
-def http_reset(body: Dict[str, Any] = {}) -> Dict[str, Any]:
+def http_reset(body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     HTTP reset endpoint. Supports dynamic scenarios via seed parameter.
     Validator sends: POST /reset with {} body, expects 200.
     Training/UI sends: POST /reset with {"task": "...", "seed": 42}
     """
     global _http_env
+    body = body or {}
     task = body.get("task", TASK_NAME) if body else TASK_NAME
     seed: Optional[int] = body.get("seed") if body else None
     _http_env = BugTriageEnvironment(task_name=task)

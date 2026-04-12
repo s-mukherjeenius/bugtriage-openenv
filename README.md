@@ -82,10 +82,11 @@ python rl_train.py
 
 **Key design decisions:**
 
-1. **Dual server pattern** — `app/server.py` is the standalone FastAPI server; `server/app.py` wraps it for openenv-core's WebSocket protocol. Both share the same environment logic.
-2. **Generic graders** — All graders derive expected answers from `scenario.ground_truth`, not hardcoded bug IDs. Static and dynamically-generated scenarios use the same grading code.
+1. **Dual server pattern** — `app/server.py` is the standalone FastAPI server with concurrent session support (up to 64 parallel evaluations); `server/app.py` wraps it for openenv-core's WebSocket protocol. Both share the same environment logic via thin adapter.
+2. **Generic graders** — All graders derive expected answers from `scenario.ground_truth`, not hardcoded bug IDs. Static and dynamically-generated scenarios use the same grading code. Team accuracy uses **adjacency partial credit** (e.g., assigning to `infrastructure` when `backend` is correct earns 0.3x instead of 0x).
 3. **Seed-based determinism** — `random.Random(seed)` per scenario, fully reproducible. Same seed = same bugs, same ground truth.
 4. **6 policy heads for RL** — Classify, Assign, Info, Escalate, Duplicate, and Spam each have independent REINFORCE networks with separate baselines.
+5. **Production-grade bug data** — Generated bugs include realistic stack traces, structured log snippets, and quantified impact metrics (affected users, error rates, revenue impact) for data-driven severity classification.
 
 ---
 
@@ -136,7 +137,7 @@ The agent submits one action per step as a JSON object:
 
 Each step returns a `BugTriageObservation` containing:
 
-- `bug_reports` — All bug reports with full text, metadata, SLA timers, customer tiers
+- `bug_reports` — All bug reports with full text, metadata, SLA timers, customer tiers, stack traces, log snippets, and quantified impact metrics
 - `current_classifications` — Map of bug_id → severity assigned so far
 - `current_assignments` — Map of bug_id → team assigned so far
 - `duplicate_map` — Map of bug_id → original_id for marked duplicates
@@ -157,7 +158,7 @@ Each step returns a `BugTriageObservation` containing:
 | Action               | Correct  | Adjacent | Wrong    |
 |----------------------|----------|----------|----------|
 | Classify severity    | +0.15    | +0.06    | -0.10    |
-| Assign team          | +0.12    | —        | -0.08    |
+| Assign team          | +0.12    | +0.04    | -0.08    |
 | Mark duplicate       | +0.18    | —        | -0.12    |
 | Escalate             | +0.12    | —        | -0.05    |
 | Request info         | +0.10    | —        | -0.05    |
@@ -170,14 +171,15 @@ Each step returns a `BugTriageObservation` containing:
 
 | Component             | Task 1 | Task 2 | Task 3 | Task 4 |
 |-----------------------|--------|--------|--------|--------|
-| Spam detection        | —      | —      | —      | 20%    |
-| Severity accuracy     | 40%    | 30%    | 25%    | 20%    |
-| Team accuracy         | 30%    | 25%    | 20%    | 15%    |
-| Duplicate detection   | —      | 20%    | 20%    | 15%    |
-| SLA/Security escalation| 10%   | 10%    | 20%    | 15%    |
-| Info request quality  | 15%    | 10%    | 10%    | 10%    |
-| Root-cause resolution | —      | —      | —      | 2%     |
-| Efficiency            | 5%     | 5%     | 5%     | 3%     |
+| Spam detection        | —      | —      | —      | 18%    |
+| Severity accuracy     | 35%    | 25%    | 22%    | 17%    |
+| Team accuracy         | 25%    | 20%    | 18%    | 13%    |
+| Duplicate detection   | —      | 20%    | 18%    | 13%    |
+| SLA/Security escalation| 10%   | 10%    | 18%    | 13%    |
+| Info request quality  | 12%    | 10%    | 8%     | 8%     |
+| Root-cause resolution | —      | —      | —      | 8%     |
+| Efficiency            | 8%     | 8%     | 8%     | 5%     |
+| Completion            | 10%    | 7%     | 8%     | 5%     |
 
 ---
 
@@ -248,14 +250,16 @@ The expert task (adversarial-triage) is designed to genuinely challenge frontier
 
 ## API Endpoints
 
-| Method | Path     | Description                         |
-|--------|----------|-------------------------------------|
-| POST   | /reset   | Initialize episode (`{task, seed?}`) |
-| POST   | /step    | Execute one triage action           |
-| GET    | /state   | Get full internal state             |
-| POST   | /grade   | Get episode score + components      |
-| GET    | /health  | Server health check                 |
-| GET    | /tasks   | List all tasks with metadata        |
+| Method | Path                    | Description                                     |
+|--------|-------------------------|-------------------------------------------------|
+| POST   | /reset                  | Initialize episode (`{task, seed?, session_id?}`) |
+| POST   | /step                   | Execute one triage action (`?session_id=...`)   |
+| GET    | /state                  | Get full internal state (`?session_id=...`)     |
+| POST   | /grade                  | Get episode score + components (`?session_id=...`) |
+| GET    | /health                 | Server health check                              |
+| GET    | /tasks                  | List all tasks with metadata                     |
+| GET    | /sessions               | List active sessions                             |
+| DELETE | /sessions/{session_id}  | Delete a session                                 |
 
 ---
 
@@ -295,11 +299,11 @@ bugtriage-openenv/
 │   ├── graders.py          # Generic step + episode graders (4 tasks, no hardcoded IDs)
 │   ├── models.py           # Pydantic: Action (7 types), Observation, Reward, State
 │   ├── scenarios.py        # Static bug reports + ground truth (4 tasks, 44 bugs)
-│   ├── server.py           # FastAPI HTTP server (supports seed in /reset)
+│   ├── server.py           # FastAPI HTTP server (concurrent sessions, seed support)
 │   └── ui.html             # Interactive web UI (Static/Dynamic toggle, 4 tasks)
 ├── server/
 │   ├── app.py              # OpenEnv-wrapped server (seed passthrough)
-│   └── bugtriage_environment.py  # openenv Environment (seed + spam support)
+│   └── bugtriage_environment.py  # Thin adapter wrapping app/env.py for openenv-core
 ├── models.py               # Root models (openenv-core typed, FLAG_SPAM action)
 ├── client.py               # openenv EnvClient for training code
 ├── inference.py            # LLM baseline inference (4 tasks + spam heuristic)
@@ -308,7 +312,7 @@ bugtriage-openenv/
 ├── Dockerfile              # Multi-stage Docker build
 ├── requirements.txt        # Runtime dependencies
 ├── pyproject.toml          # Project metadata
-└── tests/                  # Comprehensive test suite (150+ tests)
+└── tests/                  # Comprehensive test suite (156 tests)
     ├── test_env.py         # Environment logic + Task 4 spam tests
     ├── test_graders.py     # Grader + generator tests (expert generator tests)
     └── test_api.py         # HTTP API + Task 4 endpoint tests
@@ -355,7 +359,7 @@ curl -X POST -H "Content-Type: application/json" -d '{}' http://localhost:7860/r
 ```bash
 pip install pytest
 pytest tests/ -v
-# Runs 150+ tests including Task 4 spam detection, adversarial grading,
+# Runs 156 tests including Task 4 spam detection, adversarial grading,
 # and dynamic expert scenario generation tests
 ```
 
