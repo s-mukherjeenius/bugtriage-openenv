@@ -236,7 +236,7 @@ class BugTriageState(BaseModel):
     duplicates: Dict[str, str]             # bug_id → original_id
     escalations: List[str]                 # escalated bug_ids
     info_requests: Dict[str, List[str]]    # bug_id → [requested items]
-    flagged_spam: List[str] = []           # bug_ids flagged as spam
+    flagged_spam: List[str] = Field(default_factory=list)  # bug_ids flagged as spam
     submitted_bugs: List[str]              # finalised bug_ids
 
     total_reward: float

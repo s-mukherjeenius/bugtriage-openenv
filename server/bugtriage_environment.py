@@ -115,6 +115,7 @@ class BugTriageEnvironment(Environment):
             current_assignments=obs.current_assignments,
             duplicate_map=obs.duplicate_map,
             escalated_bug_ids=obs.escalated_bug_ids,
+            info_revealed_bug_ids=getattr(obs, "info_revealed_bug_ids", []),
             action_history=obs.action_history,
             available_teams=obs.available_teams,
             steps_remaining=obs.steps_remaining,

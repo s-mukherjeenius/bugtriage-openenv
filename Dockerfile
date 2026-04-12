@@ -25,6 +25,7 @@ COPY openenv.yaml   /app/env/openenv.yaml
 COPY README.md      /app/env/README.md
 
 ENV PYTHONPATH="/app/env:${PYTHONPATH:-}"
+ENV PYTHONUNBUFFERED=1
 ENV HOST="0.0.0.0"
 ENV PORT="7860"
 
