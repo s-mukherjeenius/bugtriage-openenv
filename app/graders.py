@@ -2,7 +2,8 @@
 BugTriage OpenEnv — Deterministic Graders
 ==========================================
 Each grader scores a completed (or partial) BugTriageState against ground truth.
-All graders return float in [0.0, 1.0] and are fully reproducible.
+All graders return float in (0.0, 1.0) — strictly between 0 and 1, as
+required by the OpenEnv validator — and are fully reproducible.
 
 Graders are GENERIC — they derive all bug IDs and expected actions from
 the scenario's ground_truth dict, not from hardcoded IDs. This allows
@@ -606,9 +607,14 @@ GRADERS = {
 def grade_episode(task_id: str, state: "BugTriageState", scenario: "TaskScenario") -> Dict:
     """
     Entry point for episode grading. Returns dict with 'score' and 'components'.
-    Score is in [0.0, 1.0].
+    Score is strictly in (0.0, 1.0) — open interval, as required by the OpenEnv
+    validator (scores of exactly 0.0 or 1.0 are rejected).
     """
     grader = GRADERS.get(task_id)
     if grader is None:
         raise ValueError(f"No grader registered for task '{task_id}'")
-    return grader(state, scenario)
+    result = grader(state, scenario)
+    # Clamp to open interval (0, 1) — validator rejects exactly 0.0 and 1.0
+    raw = result["score"]
+    result["score"] = round(max(0.01, min(0.99, raw)), 4)
+    return result

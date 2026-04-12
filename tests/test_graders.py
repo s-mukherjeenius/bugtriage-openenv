@@ -172,10 +172,10 @@ class TestGraderTask2:
 
 
 class TestGraderTask3:
-    def test_empty_zero(self):
+    def test_empty_floor(self):
         env = BugTriageEnv("sla-crisis")
         env.reset()
-        assert env.grade()["score"] == 0.0
+        assert env.grade()["score"] == 0.01  # clamped to open interval (0,1)
 
     def test_escalations_contribute(self):
         env = BugTriageEnv("sla-crisis")
@@ -209,10 +209,10 @@ class TestGraderTask3:
 
 
 class TestGraderTask4:
-    def test_empty_zero(self):
+    def test_empty_floor(self):
         env = BugTriageEnv("adversarial-triage")
         env.reset()
-        assert env.grade()["score"] == 0.0
+        assert env.grade()["score"] == 0.01  # clamped to open interval (0,1)
 
     def test_all_components_present(self):
         env = BugTriageEnv("adversarial-triage")
@@ -388,7 +388,7 @@ class TestGeneratorGrading:
         env = BugTriageEnv("sla-crisis")
         env.reset(seed=42)
         grade = env.grade()
-        assert grade["score"] == 0.0  # no actions taken yet -> zero score
+        assert grade["score"] == 0.01  # clamped to open interval (0,1)
         assert "sla_escalations" in grade["components"]
 
     def test_generated_perfect_easy_high_score(self):

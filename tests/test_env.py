@@ -190,8 +190,8 @@ class TestGraders:
         env_easy.step(TriageAction(action_type=ActionType.SUBMIT, bug_id="PAY-001"))
         assert env_easy.grade()["score"] >= 0.85
 
-    def test_empty_triage_zero(self, env_easy):
-        assert env_easy.grade()["score"] == 0.0
+    def test_empty_triage_floor(self, env_easy):
+        assert env_easy.grade()["score"] == 0.01  # clamped to open interval (0,1)
 
     def test_wrong_triage_low(self, env_easy):
         env_easy.step(TriageAction(action_type=ActionType.CLASSIFY, bug_id="PAY-001", severity=Severity.LOW))
